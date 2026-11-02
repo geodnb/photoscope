@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{0AC9A655-888B-48E4-885D-49BF09948112}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoScope", "src\PhotoScope\PhotoScope.csproj", "{DBBCB9AE-1B93-49F5-9991-769A935AF6DF}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{B2BF9F93-C70D-4D30-B9DA-B8FBD3A4CE9E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoScope.Tests", "tests\PhotoScope.Tests\PhotoScope.Tests.csproj", "{2357B827-8AC1-48F7-9EA4-3F90CB2E2360}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{DBBCB9AE-1B93-49F5-9991-769A935AF6DF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DBBCB9AE-1B93-49F5-9991-769A935AF6DF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DBBCB9AE-1B93-49F5-9991-769A935AF6DF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DBBCB9AE-1B93-49F5-9991-769A935AF6DF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2357B827-8AC1-48F7-9EA4-3F90CB2E2360}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2357B827-8AC1-48F7-9EA4-3F90CB2E2360}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2357B827-8AC1-48F7-9EA4-3F90CB2E2360}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2357B827-8AC1-48F7-9EA4-3F90CB2E2360}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{DBBCB9AE-1B93-49F5-9991-769A935AF6DF} = {0AC9A655-888B-48E4-885D-49BF09948112}
+		{2357B827-8AC1-48F7-9EA4-3F90CB2E2360} = {B2BF9F93-C70D-4D30-B9DA-B8FBD3A4CE9E}
+	EndGlobalSection
+EndGlobal
