@@ -1,5 +1,9 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.VisualBasic.FileIO;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 
 namespace PhotoScope.Services;
 
@@ -55,19 +59,20 @@ public static class FileOps
     }
 
     /// <summary>Moves a file into <paramref name="folder"/>, adding " (2)" etc. if the name is taken. Never overwrites.</summary>
-    public static string MoveNoOverwrite(string path, string folder)
+    /// <param name="isTaken">Extra check for names that must not be used (e.g. already in the library).</param>
+    public static string MoveNoOverwrite(string path, string folder, Func<string, bool>? isTaken = null)
     {
         if (!File.Exists(path)) throw new UserFacingException("The file could not be found. It may have been moved or deleted.");
         var fullFolder = Path.GetFullPath(folder);
-        if (string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)), Path.TrimEndingDirectorySeparator(fullFolder), StringComparison.OrdinalIgnoreCase))
-            return path; // already there
+        if (SameFolder(Path.GetDirectoryName(Path.GetFullPath(path))!, fullFolder))
+            return path; // already there (also when reached through a junction, subst or mapped drive)
 
         Directory.CreateDirectory(fullFolder);
         var name = Path.GetFileName(path);
         for (var n = 1; n < 10_000; n++)
         {
             var dest = Path.Combine(fullFolder, Candidate(name, n));
-            if (File.Exists(dest) || Directory.Exists(dest)) continue;
+            if (File.Exists(dest) || Directory.Exists(dest) || isTaken?.Invoke(dest) == true) continue;
             try
             {
                 File.Move(path, dest, overwrite: false);
@@ -82,7 +87,7 @@ public static class FileOps
     }
 
     /// <summary>Copies a file into <paramref name="folder"/>, adding " (2)" etc. if the name is taken. Never overwrites.</summary>
-    public static string CopyNoOverwrite(string path, string folder)
+    public static string CopyNoOverwrite(string path, string folder, Func<string, bool>? isTaken = null)
     {
         var fullFolder = Path.GetFullPath(folder);
         Directory.CreateDirectory(fullFolder);
@@ -90,7 +95,7 @@ public static class FileOps
         for (var n = 1; n < 10_000; n++)
         {
             var dest = Path.Combine(fullFolder, Candidate(name, n));
-            if (File.Exists(dest) || Directory.Exists(dest)) continue;
+            if (File.Exists(dest) || Directory.Exists(dest) || isTaken?.Invoke(dest) == true) continue;
             try
             {
                 File.Copy(path, dest, overwrite: false);
@@ -113,21 +118,34 @@ public static class FileOps
     }
 
     /// <summary>
-    /// True when the file is on a local fixed drive, which has a Recycle Bin. Network shares and
-    /// removable drives don't, and Windows would delete permanently there, so we refuse.
+    /// True only when Windows will really put this file in a Recycle Bin. The check resolves the
+    /// file's final location (through junctions, symbolic links, mount points and subst drives) and
+    /// refuses network shares, removable drives, volumes whose bin is set to "remove files
+    /// immediately", the NoRecycleFiles policy, and files larger than the bin can hold. In all of
+    /// those cases Windows would delete permanently, so PhotoScope leaves the file alone instead.
     /// </summary>
     public static bool CanRecycle(string path, out string reason)
     {
         reason = "";
         try
         {
-            var full = Path.GetFullPath(path);
-            if (full.StartsWith(@"\\", StringComparison.Ordinal))
+            if (Path.GetFullPath(path).StartsWith(@"\\", StringComparison.Ordinal))
             {
                 reason = "This file is on a network location, which has no Recycle Bin.";
                 return false;
             }
-            var root = Path.GetPathRoot(full);
+            var final = ResolveFinalPath(path);
+            if (final == null)
+            {
+                reason = "PhotoScope couldn't work out which drive this file is really stored on.";
+                return false;
+            }
+            if (final.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                reason = "This file is on a network location, which has no Recycle Bin.";
+                return false;
+            }
+            var root = Path.GetPathRoot(final);
             if (string.IsNullOrEmpty(root))
             {
                 reason = "The file's drive couldn't be determined.";
@@ -144,6 +162,36 @@ public static class FileOps
                 };
                 return false;
             }
+
+            using (var policy = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"))
+            {
+                if (policy?.GetValue("NoRecycleFiles") is int noRecycle && noRecycle != 0)
+                {
+                    reason = "A Windows policy on this PC turns the Recycle Bin off.";
+                    return false;
+                }
+            }
+
+            var size = new FileInfo(path).Length;
+            var volume = VolumeGuid(root);
+            long? capacityMb = null;
+            if (volume != null)
+            {
+                using var key = Registry.CurrentUser.OpenSubKey($@"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\{volume}");
+                if (key?.GetValue("NukeOnDelete") is int nuke && nuke != 0)
+                {
+                    reason = "The Recycle Bin on this drive is set to remove files immediately.";
+                    return false;
+                }
+                if (key?.GetValue("MaxCapacity") is int mb) capacityMb = mb;
+            }
+            // Without a recorded limit, assume Windows' smallest default (5% of the drive).
+            var capacityBytes = capacityMb is { } cap ? cap * 1024L * 1024L : drive.TotalSize / 20;
+            if (size >= capacityBytes)
+            {
+                reason = "This file is bigger than the Recycle Bin on its drive can hold.";
+                return false;
+            }
             return true;
         }
         catch (Exception ex)
@@ -152,6 +200,55 @@ public static class FileOps
             return false;
         }
     }
+
+    /// <summary>True when two folder paths are the same folder on disk (after resolving links and drive aliases).</summary>
+    public static bool SameFolder(string a, string b)
+    {
+        if (string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)), Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase))
+            return true;
+        var ra = ResolveFinalPath(a);
+        var rb = ResolveFinalPath(b);
+        return ra != null && rb != null &&
+               string.Equals(Path.TrimEndingDirectorySeparator(ra), Path.TrimEndingDirectorySeparator(rb), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// The real location of a file or folder (GetFinalPathNameByHandle), e.g. C:\x for a subst drive
+    /// or a junction target. Returns null if it can't be resolved to a drive-letter or UNC path.
+    /// </summary>
+    public static string? ResolveFinalPath(string path)
+    {
+        using var handle = CreateFileW(path, 0, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open, FileFlagBackupSemantics, IntPtr.Zero);
+        if (handle.IsInvalid) return null;
+        var buffer = new StringBuilder(1024);
+        var len = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+        if (len == 0 || len >= buffer.Capacity) return null;
+        var result = buffer.ToString();
+        if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + result[8..];
+        if (result.StartsWith(@"\\?\", StringComparison.Ordinal)) result = result[4..];
+        return result.Length >= 2 && result[1] == ':' ? result : null;
+    }
+
+    static string? VolumeGuid(string root)
+    {
+        var sb = new StringBuilder(64);
+        if (!GetVolumeNameForVolumeMountPointW(root, sb, (uint)sb.Capacity)) return null;
+        var name = sb.ToString(); // \\?\Volume{guid}\
+        var open = name.IndexOf('{');
+        var close = name.IndexOf('}');
+        return open >= 0 && close > open ? name[open..(close + 1)] : null;
+    }
+
+    const uint FileFlagBackupSemantics = 0x02000000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, FileShare share, IntPtr security, FileMode mode, uint flags, IntPtr template);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool GetVolumeNameForVolumeMountPointW(string mountPoint, StringBuilder volumeName, uint length);
 
     /// <summary>
     /// Sends one file to the Recycle Bin. This is the only delete path for photos in the app.

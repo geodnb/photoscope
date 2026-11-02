@@ -195,17 +195,30 @@ public static class ImageDecoder
 
     static BitmapSource DecodeCore(string path, int maxLongSide, int w, int h, int orientation, bool ignoreColorProfile)
     {
-        var ext = Path.GetExtension(path);
-        if (ext.Equals(".ico", StringComparison.OrdinalIgnoreCase))
-            return DecodeIcon(path, maxLongSide);
 
-        if (w <= 0 || h <= 0)
+        // Check the real format and size from the file header (not the extension): only the JPEG
+        // decoder can scale while decoding; other formats decode in full first.
+        bool isJpeg;
+        using (var probe = OpenRead(path))
         {
-            var info = ReadInfo(path);
-            (w, h) = (info.PixelWidth, info.PixelHeight);
-            orientation = info.Orientation;
+            var decoder = BitmapDecoder.Create(probe, BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None);
+            if (decoder is IconBitmapDecoder)
+            {
+                probe.Dispose();
+                return DecodeIcon(path, maxLongSide);
+            }
+            var frame = PickFrame(decoder);
+            isJpeg = decoder is JpegBitmapDecoder;
+            if (w <= 0 || h <= 0)
+            {
+                // Nothing known in advance: take the orientation from the file too.
+                BitmapMetadata? md = null;
+                try { md = frame.Metadata as BitmapMetadata; } catch { }
+                orientation = md != null ? ReadOrientation(md) : 1;
+            }
+            (w, h) = (frame.PixelWidth, frame.PixelHeight);
         }
-        if (!JpegExtensions.Contains(ext) && (long)w * h > MaxPixelsNonJpeg)
+        if (!isJpeg && (long)w * h > MaxPixelsNonJpeg)
             throw new ImageTooLargeException($"This image is too large to display ({w:N0} × {h:N0} pixels).");
 
         var target = maxLongSide > 0 ? Math.Min(maxLongSide, MaxViewerSide) : MaxViewerSide;
@@ -225,6 +238,14 @@ public static class ImageDecoder
 
     static BitmapSource DecodeIcon(string path, int maxLongSide)
     {
+        // Check sizes before decoding anything (a huge image saved as .ico is still huge).
+        using (var probe = OpenRead(path))
+        {
+            var d = BitmapDecoder.Create(probe, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None);
+            var f = PickFrame(d);
+            if ((long)f.PixelWidth * f.PixelHeight > MaxPixelsNonJpeg)
+                throw new ImageTooLargeException($"This image is too large to display ({f.PixelWidth:N0} × {f.PixelHeight:N0} pixels).");
+        }
         using var fs = OpenRead(path);
         var decoder = BitmapDecoder.Create(fs, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
         BitmapSource frame = PickFrame(decoder);

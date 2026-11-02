@@ -34,10 +34,12 @@ public sealed class ThumbnailLoader
     readonly LinkedList<Request> _queue = new();
     readonly object _gate = new();
     readonly SemaphoreSlim _signal = new(0);
-    readonly LruCache<(long Id, int Size, long Ticks), BitmapSource> _memory = new(700);
+    // Bounded by bytes, not count, so big thumbnails on high-DPI screens can't balloon memory.
+    readonly LruCache<(long Id, int Size, long Ticks), BitmapSource> _memory =
+        new(160L * 1024 * 1024, b => (long)b.PixelWidth * b.PixelHeight * 4);
 
     /// <summary>Raised on the UI thread when a photo can't be decoded.</summary>
-    public event Action<Photo, string>? DecodeFailed;
+    public event Action<Photo, string, bool>? DecodeFailed;
 
     public static void Initialize(ThumbnailCache disk, Dispatcher ui) => Instance = new ThumbnailLoader(disk, ui);
 
@@ -107,6 +109,7 @@ public sealed class ThumbnailLoader
 
             BitmapSource? bmp = null;
             string? error = null;
+            var permanent = false;
             try
             {
                 bmp = Produce(r.Photo, r.Size);
@@ -114,6 +117,7 @@ public sealed class ThumbnailLoader
             catch (Exception ex)
             {
                 error = Friendly.DescribeImageError(ex, r.Photo.Path);
+                permanent = Friendly.IsPermanentImageError(ex);
                 Log.Warn($"Thumbnail failed for {r.Photo.Path}: {error}", ex);
             }
 
@@ -124,7 +128,7 @@ public sealed class ThumbnailLoader
             _ui.BeginInvoke(DispatcherPriority.Background, () =>
             {
                 if (error != null && request.Photo.DecodeError == null && !request.Photo.IsMissing)
-                    DecodeFailed?.Invoke(request.Photo, error);
+                    DecodeFailed?.Invoke(request.Photo, error, permanent);
                 if (!request.Cancelled) request.Done(bmp);
             });
         }
@@ -144,15 +148,21 @@ public sealed class ThumbnailLoader
     }
 }
 
-/// <summary>Small thread-safe least-recently-used cache.</summary>
+/// <summary>Small thread-safe least-recently-used cache with a total weight budget.</summary>
 public sealed class LruCache<TKey, TValue> where TKey : notnull
 {
-    readonly int _capacity;
+    readonly long _budget;
+    readonly Func<TValue, long> _weigh;
     readonly Dictionary<TKey, LinkedListNode<(TKey Key, TValue Value)>> _map = new();
     readonly LinkedList<(TKey Key, TValue Value)> _list = new();
     readonly object _gate = new();
+    long _total;
 
-    public LruCache(int capacity) => _capacity = Math.Max(1, capacity);
+    public LruCache(long budget, Func<TValue, long>? weigh = null)
+    {
+        _budget = Math.Max(1, budget);
+        _weigh = weigh ?? (_ => 1);
+    }
 
     public bool TryGet(TKey key, out TValue value)
     {
@@ -178,12 +188,15 @@ public sealed class LruCache<TKey, TValue> where TKey : notnull
             {
                 _list.Remove(existing);
                 _map.Remove(key);
+                _total -= _weigh(existing.Value.Value);
             }
             _map[key] = _list.AddFirst((key, value));
-            while (_map.Count > _capacity && _list.Last is { } last)
+            _total += _weigh(value);
+            while (_total > _budget && _map.Count > 1 && _list.Last is { } last)
             {
                 _list.RemoveLast();
                 _map.Remove(last.Value.Key);
+                _total -= _weigh(last.Value.Value);
             }
         }
     }
@@ -194,6 +207,7 @@ public sealed class LruCache<TKey, TValue> where TKey : notnull
         {
             _map.Clear();
             _list.Clear();
+            _total = 0;
         }
     }
 }

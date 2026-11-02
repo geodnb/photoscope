@@ -86,25 +86,9 @@ public partial class SettingsWindow
         catch (Exception ex) { Dialogs.Error("Couldn't open the folder", Friendly.Describe(ex)); }
     }
 
-    string? ValidateLibraryFolder(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return "Choose a library folder.";
-        string full;
-        try { full = Path.GetFullPath(text.Trim()); }
-        catch { return "That isn't a valid folder path."; }
-        if (!Path.IsPathFullyQualified(text.Trim())) return "Use a full path, such as D:\\Photos\\Library.";
-        if (AppPaths.IsUnder(full, AppPaths.Root)) return "The library folder can't be inside PhotoScope's own data folder.";
-        var root = Path.GetPathRoot(full);
-        if (string.Equals(Path.TrimEndingDirectorySeparator(full), Path.TrimEndingDirectorySeparator(root ?? ""), StringComparison.OrdinalIgnoreCase))
-            return "Choose a folder rather than the root of a drive.";
-        var windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        if (!string.IsNullOrEmpty(windows) && AppPaths.IsUnder(full, windows)) return "The library folder can't be inside the Windows folder.";
-        return null;
-    }
-
     void OnSave(object sender, RoutedEventArgs e)
     {
-        var error = ValidateLibraryFolder(LibraryFolderBox.Text);
+        var error = AppSettings.ValidateLibraryFolder(LibraryFolderBox.Text);
         if (error != null)
         {
             LibraryFolderError.Text = error;

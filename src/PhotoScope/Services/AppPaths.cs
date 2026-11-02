@@ -16,9 +16,12 @@ public static class AppPaths
 
     static string DefaultRoot()
     {
+#if DEBUG
+        // Debug builds only: lets automated checks use a throwaway data folder.
         var overrideRoot = Environment.GetEnvironmentVariable("PHOTOSCOPE_HOME");
         if (!string.IsNullOrWhiteSpace(overrideRoot))
             return Path.GetFullPath(overrideRoot);
+#endif
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PhotoScope");
     }
 

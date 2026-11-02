@@ -60,8 +60,15 @@ public sealed partial class Photo : ObservableObject
     /// <summary>Bumped when the file behind the photo changes so thumbnails reload.</summary>
     [ObservableProperty] private int _thumbVersion;
 
-    public string FileName => System.IO.Path.GetFileName(Path);
-    public string Folder => System.IO.Path.GetDirectoryName(Path) ?? "";
+    // Cached: sorting and searching read these constantly.
+    string? _fileName, _folder;
+    partial void OnPathChanged(string value)
+    {
+        _fileName = null;
+        _folder = null;
+    }
+    public string FileName => _fileName ??= System.IO.Path.GetFileName(Path);
+    public string Folder => _folder ??= System.IO.Path.GetDirectoryName(Path) ?? "";
 
     /// <summary>True when the EXIF orientation swaps width and height.</summary>
     public bool OrientationSwapsAxes => Orientation is >= 5 and <= 8;

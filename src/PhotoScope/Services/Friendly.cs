@@ -40,6 +40,37 @@ public static class Friendly
 
     const string CodecMissing = "No Windows image codec is installed for this format.";
 
+    /// <summary>True for messages that installing a codec could fix, so they're worth retrying later.</summary>
+    public static bool IsCodecMessage(string message) =>
+        message == CodecMissing || message.Contains("Microsoft Store", StringComparison.Ordinal);
+
+    /// <summary>
+    /// True when decoding will fail the same way every time (bad data or missing codec), as opposed
+    /// to temporary problems such as a locked file, an offline drive or low memory.
+    /// </summary>
+    public static bool IsPermanentImageError(Exception ex)
+    {
+        for (var e = ex; e != null; e = e.InnerException)
+        {
+            switch (e.HResult)
+            {
+                case WincodecErrBadHeader or WincodecErrBadImage or WincodecErrBadStreamData or WincodecErrComponentNotFound
+                    or WincodecErrUnknownImageFormat or MfTopoCodecNotFound:
+                    return true;
+                case ErrorSharingViolation or ErrorLockViolation or ErrorCloudFile or ErrorDiskFull:
+                    return false;
+            }
+        }
+        return ex switch
+        {
+            OutOfMemoryException or InsufficientMemoryException or OperationCanceledException => false,
+            UnauthorizedAccessException or FileNotFoundException or DirectoryNotFoundException or DriveNotFoundException => false,
+            FileFormatException or ImageTooLargeException or NotSupportedException or ArgumentException or OverflowException => true,
+            IOException => false,
+            _ => true,
+        };
+    }
+
     public static string Describe(Exception ex)
     {
         // Imaging errors are often wrapped, so look at the whole chain for a known HRESULT.

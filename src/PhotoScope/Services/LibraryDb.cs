@@ -199,18 +199,58 @@ public sealed class LibraryDb : IDisposable
 
     public void SetFavourite(IEnumerable<long> ids, bool value) => UpdateMany("UPDATE photos SET favourite = $v WHERE id = $id", ids, value ? 1 : 0);
     public void SetRating(IEnumerable<long> ids, int value) => UpdateMany("UPDATE photos SET rating = $v WHERE id = $id", ids, Math.Clamp(value, 0, 5));
-    public void SetRotation(long id, int value) => UpdateMany("UPDATE photos SET rotation = $v WHERE id = $id", [id], ((value % 360) + 360) % 360);
-    public void SetTags(long id, string tags) => UpdateMany("UPDATE photos SET tags = $v WHERE id = $id", [id], tags);
+    public void SetRotation(long id, int value) => SetRotations([(id, value)]);
+    public void SetTags(long id, string tags) => SetTagsMany([(id, tags)]);
+    public void SetRotations(IEnumerable<(long Id, int Rotation)> rows) =>
+        UpdateRows("UPDATE photos SET rotation = $v WHERE id = $id", rows.Select(r => (r.Id, (object)(((r.Rotation % 360) + 360) % 360))));
+    public void SetTagsMany(IEnumerable<(long Id, string Tags)> rows) =>
+        UpdateRows("UPDATE photos SET tags = $v WHERE id = $id", rows.Select(r => (r.Id, (object)r.Tags)));
+
+    void UpdateRows(string sql, IEnumerable<(long Id, object Value)> rows)
+    {
+        lock (_gate)
+        {
+            using var tx = _conn.BeginTransaction();
+            using var cmd = _conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = sql;
+            var pV = cmd.Parameters.Add("$v", SqliteType.Text);
+            var pId = cmd.Parameters.Add("$id", SqliteType.Integer);
+            foreach (var (id, value) in rows)
+            {
+                pV.SqliteType = value is int or long ? SqliteType.Integer : SqliteType.Text;
+                pV.Value = value;
+                pId.Value = id;
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+        }
+    }
     public void SetMissing(IEnumerable<long> ids, bool value) => UpdateMany("UPDATE photos SET missing = $v WHERE id = $id", ids, value ? 1 : 0);
+    /// <summary>Clears stored decode errors so those photos are tried again (e.g. after a codec is installed).</summary>
+    public void ClearDecodeErrors(IEnumerable<long> ids) => UpdateMany("UPDATE photos SET decode_error = NULL WHERE id = $id", ids, null);
     public void SetDecodeError(long id, string? error) => UpdateMany("UPDATE photos SET decode_error = $v WHERE id = $id", [id], (object?)error ?? DBNull.Value);
     public void SetPath(long id, string path) => UpdateMany("UPDATE photos SET path = $v WHERE id = $id", [id], path);
 
     /// <summary>Updates the file details after a relocate (or when the file changed on disk).</summary>
-    public void UpdateFileDetails(Photo p)
+    public void UpdateFileDetails(Photo p) => UpdateFileDetailsMany([p]);
+
+    /// <summary>Updates file details for many photos in one transaction (all or nothing).</summary>
+    public void UpdateFileDetailsMany(IEnumerable<Photo> photos)
     {
         lock (_gate)
         {
+            using var tx = _conn.BeginTransaction();
+            foreach (var p in photos) UpdateFileDetailsCore(p, tx);
+            tx.Commit();
+        }
+    }
+
+    void UpdateFileDetailsCore(Photo p, SqliteTransaction tx)
+    {
+        {
             using var cmd = _conn.CreateCommand();
+            cmd.Transaction = tx;
             cmd.CommandText = """
                 UPDATE photos SET path=$path, size=$size, modified_utc=$mod, hash=$hash, width=$w, height=$h,
                        orientation=$o, date_taken=$taken, camera=$camera, missing=$missing, decode_error=$err

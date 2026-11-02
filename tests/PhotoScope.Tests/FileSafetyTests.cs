@@ -70,7 +70,11 @@ public sealed class FileSafetyTests : IDisposable
     {
         Assert.False(FileOps.CanRecycle(@"\\server\share\photo.jpg", out var reason));
         Assert.Contains("network", reason);
-        Assert.True(FileOps.CanRecycle(Path.Combine(_tmp.Path, "x.jpg"), out _));
+        var local = Path.Combine(_tmp.Path, "x.jpg");
+        File.WriteAllText(local, "x");
+        // Depends on this PC's bin settings: either allowed, or refused with a clear reason.
+        if (!FileOps.CanRecycle(local, out var why)) Assert.Contains("Recycle Bin", why);
+        Assert.False(FileOps.CanRecycle(Path.Combine(_tmp.Path, "missing.jpg"), out _));
     }
 
     /// <summary>Puts one tiny file in the real Recycle Bin, so it only runs when asked.</summary>
@@ -80,25 +84,84 @@ public sealed class FileSafetyTests : IDisposable
         if (Environment.GetEnvironmentVariable("PHOTOSCOPE_TEST_RECYCLE") != "1") return;
         var f = Path.Combine(_tmp.Path, "photoscope-recycle-test.txt");
         File.WriteAllText(f, "safe to empty");
-        FileOps.SendToRecycleBin(f);
-        Assert.False(File.Exists(f));
+        if (FileOps.CanRecycle(f, out _))
+        {
+            FileOps.SendToRecycleBin(f);
+            Assert.False(File.Exists(f));
+        }
+        else
+        {
+            // No usable bin here (e.g. "remove files immediately"): the file must be left alone.
+            Assert.Throws<UserFacingException>(() => FileOps.SendToRecycleBin(f));
+            Assert.True(File.Exists(f));
+        }
     }
 
     [Fact]
-    public void Thumbnail_cache_never_deletes_outside_its_folder()
+    public void Thumbnail_cache_never_deletes_outside_its_folder_even_through_a_junction()
     {
         var cacheDir = _tmp.Sub("cache");
-        var outside = Path.Combine(_tmp.Path, "keep.jpg");
-        File.WriteAllText(outside, "keep");
+        var victimDir = _tmp.Sub("victim");
+        Directory.CreateDirectory(victimDir);
+        // A file outside the cache whose name even matches the cache's naming pattern.
+        var victim = Path.Combine(victimDir, "aaaaaaaaaaaaaaaa_1.jpg");
+        File.WriteAllText(victim, "precious");
+        var keep = Path.Combine(_tmp.Path, "keep.jpg");
+        File.WriteAllText(keep, "keep");
+
         var cache = new ThumbnailCache(cacheDir);
-        File.WriteAllText(Path.Combine(cacheDir, "junk.jpg"), "x");
-        cache.Clear();
+        var own = Path.Combine(cacheDir, "ab", "abababababababab_1.jpg");
+        Directory.CreateDirectory(Path.GetDirectoryName(own)!);
+        File.WriteAllText(own, "thumb");
+        var foreign = Path.Combine(cacheDir, "ab", "notes.txt");
+        File.WriteAllText(foreign, "not ours");
+
+        // Junction inside the cache pointing at the victim folder (junctions need no admin rights).
+        var junction = Path.Combine(cacheDir, "aa");
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe") { CreateNoWindow = true, UseShellExecute = false };
+        psi.ArgumentList.Add("/c");
+        psi.ArgumentList.Add("mklink");
+        psi.ArgumentList.Add("/J");
+        psi.ArgumentList.Add(junction);
+        psi.ArgumentList.Add(victimDir);
+        System.Diagnostics.Process.Start(psi)!.WaitForExit();
+        Assert.True(Directory.Exists(junction), "test setup: junction not created");
+
         cache.Trim(0);
-        Assert.True(File.Exists(outside));
-        Assert.False(File.Exists(Path.Combine(cacheDir, "junk.jpg")));
+        cache.Clear();
+
+        Assert.True(File.Exists(victim));
+        Assert.True(File.Exists(keep));
+        Assert.True(File.Exists(foreign));
+        Assert.False(File.Exists(own));
 
         // A malformed hash can't escape the cache folder.
-        var p = new Photo { Id = 5, Hash = @"..\..\evil", Path = outside };
-        Assert.StartsWith(cache.Folder, Path.GetFullPath(cache.PathFor(p)));
+        var p = new Photo { Id = 5, Hash = @"..\..\evil", Path = keep };
+        Assert.StartsWith(cache.Folder, Path.GetFullPath(cache.PathFor(p, png: false)));
+        Directory.Delete(junction); // removes the link only, not its target
+    }
+
+    [Theory]
+    [InlineData(@"D:\Photos\Library", true)]
+    [InlineData(@"relative\folder", false)]
+    [InlineData(@"C:\", false)]
+    [InlineData(@"\\?\C:\x", false)]
+    [InlineData("", false)]
+    public void Library_folder_validation(string path, bool ok) =>
+        Assert.Equal(ok, AppSettings.ValidateLibraryFolder(path) == null);
+
+    [Fact]
+    public void Library_folder_cannot_be_inside_app_data() =>
+        Assert.NotNull(AppSettings.ValidateLibraryFolder(Path.Combine(AppPaths.Root, "thumbs", "lib")));
+
+    [Fact]
+    public void Lru_cache_respects_byte_budget()
+    {
+        var lru = new LruCache<int, byte[]>(100, b => b.Length);
+        for (var i = 0; i < 10; i++) lru.Add(i, new byte[30]);
+        Assert.False(lru.TryGet(0, out _));
+        Assert.True(lru.TryGet(9, out _));
+        Assert.True(lru.TryGet(7, out _));
+        Assert.False(lru.TryGet(6, out _));
     }
 }

@@ -23,6 +23,9 @@ public partial class App : Application
     /// <summary>Test mode: pushes a window to the bottom of the z-order without activating it.</summary>
     public static void SendToBack(Window w)
     {
+#if !DEBUG
+        return;
+#else
         if (!Offscreen) return;
         w.ShowActivated = false;
         w.SourceInitialized += (_, _) =>
@@ -30,6 +33,7 @@ public partial class App : Application
             var hwnd = new System.Windows.Interop.WindowInteropHelper(w).Handle;
             SetWindowPos(hwnd, new IntPtr(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
         };
+#endif
     }
 
     /// <summary>
@@ -38,6 +42,7 @@ public partial class App : Application
     /// </summary>
     public static void AddSnapshotHook(Window w, System.Windows.Controls.Panel host)
     {
+#if DEBUG
         if (!Offscreen) return;
         var b = new System.Windows.Controls.Button { Width = 1, Height = 1, Opacity = 0, Focusable = false,
             HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
@@ -60,6 +65,7 @@ public partial class App : Application
             enc.Save(fs);
         };
         host.Children.Add(b);
+#endif
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]

@@ -69,8 +69,11 @@ a playlist in the sidebar, or use right-click > Add to playlist), drag to reorde
   the image files are never rewritten.
 - Rename (validated: no illegal or reserved names, no overwriting), Move to folder, Copy to folder.
 - Open containing folder, Show in Explorer.
-- Delete offers **Remove from library** (file untouched) or **Move to Recycle Bin**. There is no permanent delete:
-  files on network shares or removable drives, which have no Recycle Bin, are refused rather than deleted.
+- Delete offers **Remove from library** (file untouched) or **Move to Recycle Bin**. There is no permanent delete.
+  Before deleting, PhotoScope works out where the file really lives (through junctions, mount points and subst
+  drives) and refuses, leaving the file alone, if Windows would delete it permanently: network shares, removable
+  drives, drives whose Recycle Bin is set to *Remove files immediately when deleted*, files bigger than the bin,
+  or a policy that disables the bin.
 - Missing files (moved or deleted outside the app, or on a disconnected drive) are flagged on startup and can be
   relocated (pick the file, or let PhotoScope search a folder by name, size and content) or removed.
 
@@ -116,6 +119,10 @@ shuffle and loop, thumbnail cache size with Clear cache.
 ## Notes
 
 - Importing from OneDrive folders with online-only files downloads them, because each file has to be read to hash it.
-- The full viewer decodes images up to 8192 px on the long side; larger images are shown slightly downscaled at 1:1.
-- Developer aids exist only in Debug builds (`--debug-import <folder>` and `PHOTOSCOPE_OFFSCREEN=1` for automated UI checks).
-  `PHOTOSCOPE_HOME=<folder>` points the app at a different data folder, which is handy for testing.
+- The full viewer first decodes at screen size and loads full resolution (up to 8192 px on the long side) when you
+  zoom in; larger images are shown slightly downscaled at 1:1.
+- Photos that fail because a codec is missing are retried each time PhotoScope starts, so installing the WebP or
+  HEIF extension fixes them without re-importing. Temporary errors (file in use, drive offline) are never remembered.
+- The thumbnail cache defaults to 4 GB (about 100,000 photos); change it in Settings.
+- Developer aids exist only in Debug builds: `PHOTOSCOPE_HOME=<folder>` (use a different data folder),
+  `--debug-import <folder>` and `PHOTOSCOPE_OFFSCREEN=1` (automated UI checks). Release builds ignore them.

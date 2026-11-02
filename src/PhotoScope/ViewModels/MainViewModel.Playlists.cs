@@ -14,7 +14,7 @@ public sealed partial class MainViewModel
     public ObservableCollection<Playlist> Playlists { get; } = new();
 
     /// <summary>Photos of the selected playlist, in order.</summary>
-    public ObservableCollection<Photo> PlaylistItems { get; } = new();
+    public Controls.BulkObservableCollection<Photo> PlaylistItems { get; } = new();
 
     [ObservableProperty] private Playlist? _selectedPlaylist;
     [ObservableProperty] private string _playlistSummary = "";
@@ -39,14 +39,16 @@ public sealed partial class MainViewModel
 
     void LoadPlaylistItems()
     {
-        PlaylistItems.Clear();
         var pl = SelectedPlaylist;
-        if (pl == null) return;
+        if (pl == null)
+        {
+            PlaylistItems.ReplaceAll([]);
+            return;
+        }
         try
         {
-            foreach (var id in Db.LoadPlaylistPhotoIds(pl.Id))
-                if (_byId.TryGetValue(id, out var photo))
-                    PlaylistItems.Add(photo);
+            var items = Db.LoadPlaylistPhotoIds(pl.Id).Select(id => _byId.GetValueOrDefault(id)).OfType<Photo>().ToList();
+            PlaylistItems.ReplaceAll(items);
             pl.Count = PlaylistItems.Count;
         }
         catch (Exception ex)
@@ -147,7 +149,12 @@ public sealed partial class MainViewModel
         if (!TryDb(() => Db.SavePlaylistItems(pl.Id, ids), "the playlist")) return 0;
 
         if (isShown)
-            for (var i = 0; i < toAdd.Count; i++) PlaylistItems.Insert(index + i, toAdd[i]);
+        {
+            if (toAdd.Count <= 20)
+                for (var i = 0; i < toAdd.Count; i++) PlaylistItems.Insert(index + i, toAdd[i]);
+            else
+                PlaylistItems.ReplaceAll(ids.Select(id => _byId.GetValueOrDefault(id)).OfType<Photo>());
+        }
         pl.Count = ids.Count;
         return toAdd.Count;
     }
@@ -157,17 +164,17 @@ public sealed partial class MainViewModel
     {
         var pl = SelectedPlaylist;
         if (pl == null || items.Count == 0) return;
-        var moving = PlaylistItems.Where(items.Contains).ToList(); // keep their relative order
-        var before = PlaylistItems.Take(Math.Clamp(targetIndex, 0, PlaylistItems.Count)).Count(p => !moving.Contains(p));
-        var rest = PlaylistItems.Where(p => !moving.Contains(p)).ToList();
+        var set = items.ToHashSet();
+        var moving = PlaylistItems.Where(set.Contains).ToList(); // keep their relative order
+        var before = PlaylistItems.Take(Math.Clamp(targetIndex, 0, PlaylistItems.Count)).Count(p => !set.Contains(p));
+        var rest = PlaylistItems.Where(p => !set.Contains(p)).ToList();
         rest.InsertRange(before, moving);
         if (rest.SequenceEqual(PlaylistItems)) return;
         if (!TryDb(() => Db.SavePlaylistItems(pl.Id, rest.Select(p => p.Id).ToList()), "the playlist order")) return;
-        for (var i = 0; i < rest.Count; i++)
-        {
-            var current = PlaylistItems.IndexOf(rest[i]);
-            if (current != i) PlaylistItems.Move(current, i);
-        }
+        if (moving.Count == 1)
+            PlaylistItems.Move(PlaylistItems.IndexOf(moving[0]), rest.IndexOf(moving[0]));
+        else
+            PlaylistItems.ReplaceAll(rest);
     }
 
     [RelayCommand]
@@ -178,7 +185,7 @@ public sealed partial class MainViewModel
         var remove = items.Cast<Photo>().ToHashSet();
         var remaining = PlaylistItems.Where(p => !remove.Contains(p)).Select(p => p.Id).ToList();
         if (!TryDb(() => Db.SavePlaylistItems(pl.Id, remaining), "the playlist")) return;
-        foreach (var p in remove) PlaylistItems.Remove(p);
+        PlaylistItems.RemoveAll(remove.Contains);
         pl.Count = PlaylistItems.Count;
     }
 
@@ -212,8 +219,7 @@ public sealed partial class MainViewModel
     /// <summary>Keeps the playlist view in step after photos leave the library (the database cascades).</summary>
     void RemoveFromLoadedPlaylist(HashSet<Photo> removed)
     {
-        for (var i = PlaylistItems.Count - 1; i >= 0; i--)
-            if (removed.Contains(PlaylistItems[i])) PlaylistItems.RemoveAt(i);
+        PlaylistItems.RemoveAll(removed.Contains);
         try
         {
             var counts = Db.LoadPlaylists().ToDictionary(p => p.Id, p => p.Count);

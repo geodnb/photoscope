@@ -80,7 +80,9 @@ public sealed partial class MainViewModel
             if (version == _previewVersion)
             {
                 PreviewError = Friendly.DescribeImageError(ex, p.Path);
-                if (!File.Exists(p.Path)) PreviewError = "This file can't be found. It may have been moved, renamed or deleted.";
+                var path = p.Path;
+                if (!await Task.Run(() => File.Exists(path)) && version == _previewVersion)
+                    PreviewError = "This file can't be found. It may have been moved, renamed or deleted.";
             }
         }
         finally
@@ -112,14 +114,17 @@ public sealed partial class MainViewModel
         if (Photos.Count == 0) return;
         var start = SelectedPhotos.Count == 1 ? SelectedPhoto : null;
         // With several photos selected, show just those.
-        var list = SelectedPhotos.Count > 1 ? Photos.Where(SelectedPhotos.Contains).ToList() : Photos.ToList();
+        var selected = SelectedPhotos.ToHashSet();
+        var list = SelectedPhotos.Count > 1 ? Photos.Where(selected.Contains).ToList() : Photos.ToList();
         ShowViewer(list, start ?? list[0], slideshow: true);
     }
 
     public void ShowViewer(IReadOnlyList<Photo> list, Photo start, bool slideshow)
     {
         if (list.Count == 0) return;
-        var index = Math.Max(0, list.ToList().IndexOf(start));
+        var index = 0;
+        for (var i = 0; i < list.Count; i++)
+            if (ReferenceEquals(list[i], start)) { index = i; break; }
         var viewer = new ViewerWindow(this, list, index, slideshow) { Owner = Application.Current.MainWindow };
         viewer.ShowDialog();
         if (viewer.LastShown is { } last && _byId.ContainsKey(last.Id) && Photos.Contains(last))

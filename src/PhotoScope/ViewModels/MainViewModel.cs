@@ -118,8 +118,16 @@ public sealed partial class MainViewModel : ObservableObject
             var photos = await Task.Run(Db.LoadPhotos);
             foreach (var p in photos)
             {
+                if (_byId.ContainsKey(p.Id)) continue;
                 _all.Add(p);
                 _byId[p.Id] = p;
+            }
+            // Errors that may be fixed by installing a codec (WebP/HEIC/AVIF) are retried on every launch.
+            var retry = _all.Where(p => p.DecodeError != null && Friendly.IsCodecMessage(p.DecodeError)).ToList();
+            if (retry.Count > 0)
+            {
+                foreach (var p in retry) p.DecodeError = null;
+                try { Db.ClearDecodeErrors(retry.Select(p => p.Id)); } catch (Exception ex) { Log.Warn("Could not reset decode errors", ex); }
             }
             LoadPlaylists();
             RefreshView();
@@ -235,8 +243,8 @@ public sealed partial class MainViewModel : ObservableObject
     {
         foreach (var t in terms)
         {
-            if (p.FileName.Contains(t, StringComparison.CurrentCultureIgnoreCase)) continue;
-            if (p.Tags.Length > 0 && p.Tags.Contains(t, StringComparison.CurrentCultureIgnoreCase)) continue;
+            if (p.FileName.Contains(t, StringComparison.OrdinalIgnoreCase)) continue;
+            if (p.Tags.Length > 0 && p.Tags.Contains(t, StringComparison.OrdinalIgnoreCase)) continue;
             return false;
         }
         return true;
@@ -376,6 +384,11 @@ public sealed partial class MainViewModel : ObservableObject
             Dialogs.Info("Import in progress", "Wait for the current import to finish, or cancel it first.");
             return;
         }
+        if (IsLoading)
+        {
+            Dialogs.Info("Still loading", "Your library is still loading. Try again in a moment.");
+            return;
+        }
         var dlg = new ImportDialog(Settings, initialPaths) { Owner = Application.Current.MainWindow };
         if (dlg.ShowDialog() == true && dlg.Result is { } options)
             _ = RunImportAsync(options);
@@ -491,7 +504,7 @@ public sealed partial class MainViewModel : ObservableObject
             var dirExists = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             var missingBag = new ConcurrentBag<Photo>();
             var presentBag = new ConcurrentBag<Photo>();
-            var changedBag = new ConcurrentBag<(Photo, long, DateTime, ImageInfo?)>();
+            var changedBag = new ConcurrentBag<(Photo Photo, long Size, DateTime Modified, ImageInfo? Info, string? Hash)>();
             Parallel.ForEach(snapshot, new ParallelOptions { MaxDegreeOfParallelism = 8 }, item =>
             {
                 try
@@ -508,7 +521,9 @@ public sealed partial class MainViewModel : ObservableObject
                     {
                         ImageInfo? info = null;
                         try { info = ImageDecoder.ReadInfo(item.Path); } catch { }
-                        changedBag.Add((item.Photo, fi.Length, fi.LastWriteTimeUtc, info));
+                        string? hash = null;
+                        try { hash = ImportService.HashFileForCompare(item.Path); } catch { }
+                        changedBag.Add((item.Photo, fi.Length, fi.LastWriteTimeUtc, info, hash));
                     }
                 }
                 catch (Exception ex)
@@ -519,29 +534,41 @@ public sealed partial class MainViewModel : ObservableObject
             return (missingBag.ToList(), presentBag.ToList(), changedBag.ToList());
         });
 
-        var nowMissing = missing.Where(p => !p.IsMissing && _byId.ContainsKey(p.Id)).ToList();
-        var nowFound = present.Where(p => p.IsMissing && _byId.ContainsKey(p.Id)).ToList();
-        foreach (var p in nowMissing) p.IsMissing = true;
-        foreach (var p in nowFound) p.IsMissing = false;
+        // Ignore results for photos that were renamed, moved or removed while the scan ran.
+        var checkedPath = snapshot.ToDictionary(s => s.Photo, s => s.Path);
+        bool Unchanged(Photo p) => _byId.ContainsKey(p.Id) && checkedPath.TryGetValue(p, out var path) && path == p.Path;
+        var nowMissing = missing.Where(p => !p.IsMissing && Unchanged(p)).ToList();
+        var nowFound = present.Where(p => p.IsMissing && Unchanged(p)).ToList();
+        var updates = changed.Where(c => Unchanged(c.Photo)).Select(c => (c.Photo, Copy: new Photo
+        {
+            Id = c.Photo.Id, Path = c.Photo.Path, Hash = c.Hash ?? c.Photo.Hash, SizeBytes = c.Size, ModifiedUtc = c.Modified,
+            PixelWidth = c.Info?.PixelWidth ?? c.Photo.PixelWidth, PixelHeight = c.Info?.PixelHeight ?? c.Photo.PixelHeight,
+            Orientation = c.Info?.Orientation ?? c.Photo.Orientation, DateTaken = c.Info?.DateTaken ?? c.Photo.DateTaken,
+            CameraModel = c.Info?.CameraModel ?? c.Photo.CameraModel, DecodeError = c.Info != null ? null : c.Photo.DecodeError,
+            IsMissing = false,
+        })).ToList();
         try
         {
-            if (nowMissing.Count > 0) Db.SetMissing(nowMissing.Select(p => p.Id), true);
-            if (nowFound.Count > 0) Db.SetMissing(nowFound.Select(p => p.Id), false);
-            foreach (var (p, size, mod, info) in changed)
+            await Task.Run(() =>
             {
-                if (!_byId.ContainsKey(p.Id)) continue;
-                p.SizeBytes = size;
-                p.ModifiedUtc = mod;
-                if (info != null)
-                {
-                    p.PixelWidth = info.PixelWidth;
-                    p.PixelHeight = info.PixelHeight;
-                    p.Orientation = info.Orientation;
-                    p.DateTaken = info.DateTaken ?? p.DateTaken;
-                    p.CameraModel = info.CameraModel ?? p.CameraModel;
-                    p.DecodeError = null;
-                }
-                Db.UpdateFileDetails(p);
+                if (nowMissing.Count > 0) Db.SetMissing(nowMissing.Select(p => p.Id), true);
+                if (nowFound.Count > 0) Db.SetMissing(nowFound.Select(p => p.Id), false);
+                if (updates.Count > 0) Db.UpdateFileDetailsMany(updates.Select(u => u.Copy));
+            });
+            foreach (var p in nowMissing) p.IsMissing = true;
+            foreach (var p in nowFound) p.IsMissing = false;
+            foreach (var (p, c) in updates)
+            {
+                if (!Unchanged(p)) continue;
+                p.Hash = c.Hash;
+                p.SizeBytes = c.SizeBytes;
+                p.ModifiedUtc = c.ModifiedUtc;
+                p.PixelWidth = c.PixelWidth;
+                p.PixelHeight = c.PixelHeight;
+                p.Orientation = c.Orientation;
+                p.DateTaken = c.DateTaken;
+                p.CameraModel = c.CameraModel;
+                p.DecodeError = c.DecodeError;
                 p.NotifyAllChanged();
                 p.ThumbVersion++;
             }
@@ -574,9 +601,12 @@ public sealed partial class MainViewModel : ObservableObject
             new BannerAction("Remove from library", () => RemoveFromLibrary(_all.Where(p => p.IsMissing).ToList())));
     }
 
-    void OnDecodeFailed(Photo p, string error)
+    void OnDecodeFailed(Photo p, string error, bool permanent)
     {
         if (!_byId.ContainsKey(p.Id)) return;
+        // Temporary problems (file in use, drive offline, low memory) aren't remembered; the
+        // thumbnail is simply tried again later.
+        if (!permanent) return;
         p.DecodeError = error;
         try { Db.SetDecodeError(p.Id, error); }
         catch (Exception ex) { Log.Warn("Could not save decode error", ex); }

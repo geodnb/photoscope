@@ -97,6 +97,8 @@ public sealed class ImportService
             var knownHashes = _db.GetAllHashes();
             var batchHashes = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             var importedAt = DateTime.UtcNow;
+            if (o.Mode == ImportMode.CopyToLibrary && AppSettings.ValidateLibraryFolder(o.LibraryFolder) is { } folderError)
+                throw new UserFacingException("The library folder can't be used: " + folderError);
             var copyRoot = o.Mode == ImportMode.CopyToLibrary ? Path.GetFullPath(o.LibraryFolder) : null;
             if (copyRoot != null) Directory.CreateDirectory(copyRoot);
 
@@ -118,7 +120,7 @@ public sealed class ImportService
                         switch (outcome)
                         {
                             case Outcome.Imported:
-                                await channel.Writer.WriteAsync(photo!, token);
+                                await channel.Writer.WriteAsync(photo!, CancellationToken.None);
                                 break;
                             case Outcome.Duplicate:
                                 Interlocked.Increment(ref duplicates);
@@ -198,7 +200,8 @@ public sealed class ImportService
         }
         catch (Exception ex)
         {
-            decodeError = Friendly.DescribeImageError(ex, path);
+            // Only remember errors that will recur; temporary ones are retried when the thumbnail loads.
+            if (Friendly.IsPermanentImageError(ex)) decodeError = Friendly.DescribeImageError(ex, path);
             Log.Warn($"Import: could not read image info for {path}: {decodeError}", ex);
         }
 
@@ -234,7 +237,7 @@ public sealed class ImportService
             }
             catch (Exception ex)
             {
-                photo.DecodeError = Friendly.DescribeImageError(ex, finalPath);
+                if (Friendly.IsPermanentImageError(ex)) photo.DecodeError = Friendly.DescribeImageError(ex, finalPath);
                 Log.Warn($"Import: thumbnail failed for {finalPath}: {photo.DecodeError}", ex);
             }
         }

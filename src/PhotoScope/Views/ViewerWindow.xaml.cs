@@ -47,7 +47,17 @@ public partial class ViewerWindow
     double _panTx, _panTy;
     int _wheelAccumulator;
 
-    sealed record Decoded(BitmapSource? Bitmap, string? Error, bool Missing);
+    /// <param name="Reduced">True when decoded at screen size rather than full resolution.</param>
+    sealed record Decoded(BitmapSource? Bitmap, string? Error, bool Missing, bool Reduced = false, bool Skipped = false);
+
+    // Photo ids still worth decoding (current + neighbours). Read by decode tasks, so guarded by a lock.
+    readonly HashSet<long> _wanted = new();
+    Task<Decoded>? _fullTask;
+    long _fullFor = -1;
+    bool _shownReduced;
+
+    /// <summary>Longest side, in physical pixels, worth decoding for "fit" display on this screen.</summary>
+    int ScreenLongSide => (int)Math.Clamp(Math.Max(Math.Max(ActualWidth, ActualHeight), 1280) * _dpi, 1280, ImageDecoder.MaxViewerSide);
 
     public Photo? LastShown => _shown;
 
@@ -141,42 +151,94 @@ public partial class ViewerWindow
     Task<Decoded> GetDecoded(Photo p)
     {
         if (_cache.TryGetValue(p.Id, out var existing)) return existing;
-        var task = Task.Run(async () =>
+        lock (_wanted) _wanted.Add(p.Id);
+        var task = DecodeAsync(p, ScreenLongSide, checkWanted: true);
+        _cache[p.Id] = task;
+        return task;
+    }
+
+    Task<Decoded> DecodeAsync(Photo p, int maxSide, bool checkWanted)
+    {
+        var (path, w, h, orientation) = (p.Path, p.PixelWidth, p.PixelHeight, p.Orientation);
+        var id = p.Id;
+        var originalLong = Math.Max(w, h);
+        return Task.Run(async () =>
         {
             await _decodeGate.WaitAsync();
             try
             {
-                if (!File.Exists(p.Path)) return new Decoded(null, "This file can't be found. It may have been moved, renamed or deleted.", true);
-                var bmp = ImageDecoder.Decode(p.Path, 0, p.PixelWidth, p.PixelHeight, p.Orientation);
-                return new Decoded(bmp, null, false);
+                // The user may have moved on while this waited in the queue: don't decode for nothing.
+                if (checkWanted)
+                    lock (_wanted)
+                        if (!_wanted.Contains(id)) return new Decoded(null, null, false, Skipped: true);
+                if (!File.Exists(path)) return new Decoded(null, "This file can't be found. It may have been moved, renamed or deleted.", true);
+                var bmp = ImageDecoder.Decode(path, maxSide, w, h, orientation);
+                var reduced = originalLong > 0 && Math.Max(bmp.PixelWidth, bmp.PixelHeight) < Math.Min(originalLong, ImageDecoder.MaxViewerSide);
+                return new Decoded(bmp, null, false, reduced);
             }
             catch (Exception ex)
             {
                 Log.Warn($"Viewer could not decode {p.Path}", ex);
-                return new Decoded(null, Friendly.DescribeImageError(ex, p.Path), false);
+                return new Decoded(null, Friendly.DescribeImageError(ex, path), false);
             }
             finally
             {
                 _decodeGate.Release();
             }
         });
-        _cache[p.Id] = task;
-        return task;
     }
 
     /// <summary>Keeps the current photo and its neighbours decoded; drops everything else.</summary>
     void Preload()
     {
-        var keep = new HashSet<long>();
-        foreach (var offset in new[] { 0, 1, -1, 2 })
+        PruneCache();
+        foreach (var offset in new[] { 1, -1 })
         {
             var i = NeighbourIndex(offset);
-            if (i < 0) continue;
-            keep.Add(_items[i].Id);
-            GetDecoded(_items[i]);
+            if (i >= 0) GetDecoded(_items[i]);
+        }
+    }
+
+    /// <summary>Forgets every decode except the current photo and its immediate neighbours.</summary>
+    void PruneCache()
+    {
+        var keep = new HashSet<long>();
+        foreach (var offset in new[] { 0, 1, -1 })
+        {
+            var i = NeighbourIndex(offset);
+            if (i >= 0) keep.Add(_items[i].Id);
+        }
+        if (_items.Count > 0) keep.Add(_items[_index].Id);
+        lock (_wanted)
+        {
+            _wanted.Clear();
+            _wanted.UnionWith(keep);
         }
         foreach (var id in _cache.Keys.Where(id => !keep.Contains(id)).ToList())
             _cache.Remove(id);
+        if (_fullFor >= 0 && !keep.Contains(_fullFor))
+        {
+            _fullTask = null;
+            _fullFor = -1;
+        }
+    }
+
+    /// <summary>Loads the full-resolution image for the current photo once the user zooms in.</summary>
+    async void EnsureFullResolution()
+    {
+        if (!_shownReduced || _shown is not { } p || _fit) return;
+        if (_fullFor != p.Id || _fullTask == null)
+        {
+            _fullFor = p.Id;
+            _fullTask = DecodeAsync(p, 0, checkWanted: false);
+        }
+        var task = _fullTask;
+        Decoded result;
+        try { result = await task; }
+        catch { return; }
+        if (!IsLoaded || !ReferenceEquals(_shown, p) || result.Bitmap == null || _fullTask != task) return;
+        MainImage.Source = result.Bitmap; // same on-screen size, more pixels
+        _shownReduced = false;
     }
 
     int NeighbourIndex(int offset)
@@ -207,6 +269,7 @@ public partial class ViewerWindow
         var p = _items[_index];
         var version = ++_showVersion;
         UpdateChrome(p);
+        PruneCache(); // bounded memory even when keys are held down or decodes are slow
 
         var task = GetDecoded(p);
         if (!task.IsCompleted)
@@ -230,8 +293,17 @@ public partial class ViewerWindow
         _loadingTimer.Stop();
         Loading.Visibility = Visibility.Collapsed;
 
+        if (result.Skipped)
+        {
+            // Shouldn't happen for the current photo, but if it does, decode it now.
+            _cache.Remove(p.Id);
+            Show(_index, crossfade);
+            return;
+        }
         if (crossfade && _hasImage) StartCrossfade();
         Display(p, result.Bitmap, result.Error, result.Missing, isPlaceholder: false);
+        _shownReduced = result.Reduced;
+        if (!_fit) EnsureFullResolution();
         Preload();
     }
 
@@ -321,6 +393,7 @@ public partial class ViewerWindow
         _scale = newScale;
         _fit = Math.Abs(newScale - min) < 0.0001;
         ApplyTransform();
+        if (!_fit) EnsureFullResolution();
     }
 
     void ApplyTransform()

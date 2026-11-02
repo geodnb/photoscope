@@ -41,8 +41,32 @@ public sealed class AppSettings
     public bool SlideshowLoop { get; set; } = true;
 
     // Cache and appearance
-    public int ThumbnailCacheLimitMB { get; set; } = 2048;
+    public int ThumbnailCacheLimitMB { get; set; } = 4096;
     public ThemeMode Theme { get; set; } = ThemeMode.System;
+
+    /// <summary>Returns why a library copy folder is unsafe or invalid, or null if it's fine.</summary>
+    public static string? ValidateLibraryFolder(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "Choose a library folder.";
+        text = text.Trim();
+        if (text.StartsWith(@"\\?\", StringComparison.Ordinal) || text.StartsWith(@"\\.\", StringComparison.Ordinal))
+            return "Use a normal folder path, such as D:\\Photos\\Library.";
+        if (!Path.IsPathFullyQualified(text)) return "Use a full path, such as D:\\Photos\\Library.";
+        string full;
+        try { full = Path.GetFullPath(text); }
+        catch { return "That isn't a valid folder path."; }
+        if (AppPaths.IsUnder(full, AppPaths.Root) || AppPaths.IsUnder(AppPaths.Root, full))
+            return "The library folder can't contain, or be inside, PhotoScope's own data folder.";
+        var root = Path.GetPathRoot(full);
+        if (string.Equals(Path.TrimEndingDirectorySeparator(full), Path.TrimEndingDirectorySeparator(root ?? ""), StringComparison.OrdinalIgnoreCase))
+            return "Choose a folder rather than the root of a drive.";
+        foreach (var special in new[] { Environment.SpecialFolder.Windows, Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 })
+        {
+            var dir = Environment.GetFolderPath(special);
+            if (!string.IsNullOrEmpty(dir) && AppPaths.IsUnder(full, dir)) return "The library folder can't be inside a Windows system folder.";
+        }
+        return null;
+    }
 
     public static string DefaultLibraryFolder() =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "PhotoScope Library");
@@ -60,7 +84,8 @@ public sealed class AppSettings
         ThumbnailSize = Clamp(ThumbnailSize, 80, 320, 160);
         SlideshowIntervalSeconds = Clamp(SlideshowIntervalSeconds, 1, 120, 5);
         ThumbnailCacheLimitMB = Math.Clamp(ThumbnailCacheLimitMB, 100, 100_000);
-        if (string.IsNullOrWhiteSpace(LibraryFolder)) LibraryFolder = DefaultLibraryFolder();
+        if (ValidateLibraryFolder(LibraryFolder) != null) LibraryFolder = DefaultLibraryFolder();
+        else LibraryFolder = Path.GetFullPath(LibraryFolder.Trim());
         if (WindowLeft is { } l && !double.IsFinite(l)) WindowLeft = null;
         if (WindowTop is { } t && !double.IsFinite(t)) WindowTop = null;
         if (!Enum.IsDefined(LastSection)) LastSection = LibrarySection.All;

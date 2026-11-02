@@ -65,8 +65,11 @@ public sealed class ListDragSource
         _start = null;
         _deferredSelect = false;
         if (!_pressed.IsSelected) _list.SelectedItem = _pressed.DataContext;
-        var photos = _list.SelectedItems.Cast<object>().OfType<Photo>()
-            .OrderBy(x => _list.Items.IndexOf(x)).ToList();
+        // Keep gallery order: one pass over the items with a set lookup (fast even for huge selections).
+        var selected = _list.SelectedItems.Cast<object>().ToHashSet();
+        var photos = new List<Photo>(selected.Count);
+        foreach (var item in _list.Items)
+            if (item is Photo ph && selected.Contains(ph)) photos.Add(ph);
         if (photos.Count == 0) return;
 
         var data = new DataObject(_format, photos.Select(x => x.Id).ToArray());

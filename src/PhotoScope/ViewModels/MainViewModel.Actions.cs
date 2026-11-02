@@ -31,7 +31,14 @@ public sealed partial class MainViewModel
         if (!TryDb(() => Db.SetFavourite(photos.Select(p => p.Id), value), "the favourite")) return;
         foreach (var p in photos) p.IsFavourite = value;
         if (SelectedSection?.Section == LibrarySection.Favourites)
-            foreach (var p in photos) Reposition(p);
+        {
+            if (value) RefreshView();
+            else
+            {
+                var set = photos.ToHashSet();
+                Photos.RemoveAll(set.Contains);
+            }
+        }
         UpdateCounts();
     }
 
@@ -46,11 +53,19 @@ public sealed partial class MainViewModel
     /// <summary>Changes the viewing rotation stored in the database. The image file is not modified.</summary>
     public void Rotate(IReadOnlyList<Photo> photos, int delta)
     {
-        foreach (var p in photos)
-        {
-            var value = ((p.Rotation + delta) % 360 + 360) % 360;
-            if (TryDb(() => Db.SetRotation(p.Id, value), "the rotation")) p.Rotation = value;
-        }
+        if (photos.Count == 0) return;
+        var rows = photos.Select(p => (p, Value: ((p.Rotation + delta) % 360 + 360) % 360)).ToList();
+        if (!TryDb(() => Db.SetRotations(rows.Select(r => (r.p.Id, r.Value))), "the rotation")) return;
+        foreach (var (p, value) in rows) p.Rotation = value;
+    }
+
+    /// <summary>Adds tags to many photos in one database transaction.</summary>
+    public void AddTags(IReadOnlyList<Photo> photos, string tags)
+    {
+        var rows = photos.Select(p => (p, Tags: Photo.NormalizeTags(p.Tags + ", " + tags))).Where(r => r.Tags != r.p.Tags).ToList();
+        if (rows.Count == 0) return;
+        if (!TryDb(() => Db.SetTagsMany(rows.Select(r => (r.p.Id, r.Tags))), "the tags")) return;
+        foreach (var (p, t) in rows) p.Tags = t;
     }
 
     public void SetTags(Photo p, string tags)

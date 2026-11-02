@@ -217,7 +217,8 @@ public sealed partial class MainViewModel
     async Task MoveOrCopyAsync(IReadOnlyList<Photo> photos, bool move)
     {
         if (photos.Count == 0 || !EnsureNotBusy()) return;
-        var present = photos.Where(p => !p.IsMissing && File.Exists(p.Path)).ToList();
+        var candidates = photos.Where(p => !p.IsMissing).Select(p => (Photo: p, p.Path)).ToList();
+        var present = (await Task.Run(() => candidates.Where(c => File.Exists(c.Path)).ToList())).Select(c => c.Photo).ToList();
         if (present.Count == 0)
         {
             Dialogs.Info("Nothing to do", "The selected files can't be found.");
@@ -248,8 +249,26 @@ public sealed partial class MainViewModel
                 {
                     try
                     {
-                        var dest = move ? FileOps.MoveNoOverwrite(path, target) : FileOps.CopyNoOverwrite(path, target);
-                        done.Add((photo, path, dest));
+                        if (!move)
+                        {
+                            done.Add((photo, path, FileOps.CopyNoOverwrite(path, target)));
+                            continue;
+                        }
+                        // Never pick a name another library entry (e.g. a missing photo) still owns.
+                        var dest = FileOps.MoveNoOverwrite(path, target, Db.PathExists);
+                        if (string.Equals(dest, path, StringComparison.OrdinalIgnoreCase)) continue;
+                        try
+                        {
+                            Db.SetPath(photo.Id, dest); // update the library straight away, file by file
+                            done.Add((photo, path, dest));
+                        }
+                        catch (Exception dbEx)
+                        {
+                            Log.Error($"Library update failed after moving {path}; moving it back", dbEx);
+                            try { File.Move(dest, path, overwrite: false); }
+                            catch (Exception undoEx) { Log.Error($"Could not move {dest} back", undoEx); }
+                            errors.Add($"{Path.GetFileName(path)}: the library couldn't be updated, so the file was left where it was.");
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -264,19 +283,10 @@ public sealed partial class MainViewModel
             {
                 foreach (var (photo, oldPath, newPath) in results.done)
                 {
-                    if (string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase)) continue;
-                    try
-                    {
-                        Db.SetPath(photo.Id, newPath);
-                        photo.Path = newPath;
-                        Log.Info($"Moved {oldPath} -> {newPath}");
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error($"Moved {oldPath} -> {newPath} but the library couldn't be updated", ex);
-                        results.errors.Add($"{Path.GetFileName(newPath)}: moved, but the library couldn't be updated.");
-                    }
+                    photo.Path = newPath;
+                    Log.Info($"Moved {oldPath} -> {newPath}");
                 }
+                if (SortBy == SortField.Name) RefreshView();
             }
 
             CloseBanner("busy");
@@ -335,7 +345,7 @@ public sealed partial class MainViewModel
         }
         var add = Dialogs.Prompt($"Add tags to {photos.Count:N0} photos", "Separate tags with commas. Existing tags are kept.", "", _ => null, "Add");
         if (string.IsNullOrWhiteSpace(add)) return;
-        foreach (var p in photos) SetTags(p, p.Tags + ", " + add);
+        AddTags(photos, add);
     }
 
     // ------------------------------------------------------------------ relocate missing files
@@ -346,11 +356,11 @@ public sealed partial class MainViewModel
     void RelocateMissing(IReadOnlyList<Photo> photos)
     {
         if (photos.Count == 0 || !EnsureNotBusy()) return;
-        if (photos.Count == 1) RelocateOne(photos[0]);
+        if (photos.Count == 1) _ = RelocateOneAsync(photos[0]);
         else _ = RelocateManyAsync(photos);
     }
 
-    void RelocateOne(Photo p)
+    async Task RelocateOneAsync(Photo p)
     {
         var dlg = new OpenFileDialog
         {
@@ -369,17 +379,29 @@ public sealed partial class MainViewModel
             Dialogs.Info("Already in the library", "That file is already in your library as a separate photo.");
             return;
         }
-        string hash;
-        try { hash = ImportService.HashFileForCompare(path); }
+        Relocation found;
+        IsBusy = true;
+        try { found = await Task.Run(() => ReadRelocation(path, null)); }
         catch (Exception ex)
         {
             Dialogs.Error("Couldn't read the file", Friendly.Describe(ex));
             return;
         }
-        if (!string.Equals(hash, p.Hash, StringComparison.OrdinalIgnoreCase) &&
+        finally { IsBusy = false; }
+        if (!string.Equals(found.Hash, p.Hash, StringComparison.OrdinalIgnoreCase) &&
             !Dialogs.Confirm("Different file?", "The file you chose doesn't have the same contents as the original. Use it for this photo anyway?", "Use this file"))
             return;
-        ApplyRelocation(p, path, hash);
+        ApplyRelocations([(p, found)]);
+    }
+
+    sealed record Relocation(string Path, string Hash, long Size, DateTime ModifiedUtc, ImageInfo? Info);
+
+    static Relocation ReadRelocation(string path, string? knownHash)
+    {
+        var fi = new FileInfo(path);
+        ImageInfo? info = null;
+        try { info = ImageDecoder.ReadInfo(path); } catch { }
+        return new Relocation(path, knownHash ?? ImportService.HashFileForCompare(path), fi.Length, fi.LastWriteTimeUtc, info);
     }
 
     async Task RelocateManyAsync(IReadOnlyList<Photo> photos)
@@ -398,7 +420,7 @@ public sealed partial class MainViewModel
                 var byName = wanted.GroupBy(w => w.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
                 var found = new ConcurrentDictionary<Photo, string>();
                 var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, AttributesToSkip = FileAttributes.System };
-                foreach (var file in Directory.EnumerateFiles(root, "*", options))
+                foreach (var file in Directory.EnumerateFiles(root, "*", options).Where(f => !AppPaths.IsUnder(f, AppPaths.Root)))
                 {
                     if (!byName.TryGetValue(Path.GetFileName(file), out var candidates)) continue;
                     long size;
@@ -416,15 +438,11 @@ public sealed partial class MainViewModel
                         catch (Exception ex) { Log.Warn($"Relocate: could not hash {file}", ex); }
                     }
                 }
-                return found;
+                return found.Where(kv => !Db.PathExists(kv.Value))
+                            .Select(kv => (kv.Key, ReadRelocation(kv.Value, kv.Key.Hash))).ToList();
             });
 
-            var relocated = 0;
-            foreach (var (photo, path) in matches)
-            {
-                if (Db.PathExists(path)) continue;
-                if (ApplyRelocation(photo, path, photo.Hash)) relocated++;
-            }
+            var relocated = ApplyRelocations(matches);
             CloseBanner("busy");
             Dialogs.Info("Relocate", relocated == photos.Count
                 ? $"Found all {relocated:N0} photos."
@@ -445,44 +463,52 @@ public sealed partial class MainViewModel
         }
     }
 
-    bool ApplyRelocation(Photo p, string path, string hash)
+    /// <summary>Saves relocations to the database first (one transaction), then updates the photos and refreshes once.</summary>
+    int ApplyRelocations(IReadOnlyList<(Photo Photo, Relocation Found)> items)
     {
-        try
+        if (items.Count == 0) return 0;
+        var updated = items.Select(x => (x.Photo, Copy: WithRelocation(x.Photo, x.Found))).ToList();
+        if (!TryDb(() => Db.UpdateFileDetailsMany(updated.Select(u => u.Copy)), "the new locations")) return 0;
+
+        foreach (var (p, c) in updated)
         {
-            var fi = new FileInfo(path);
-            ImageInfo? info = null;
-            try { info = ImageDecoder.ReadInfo(path); } catch { }
-            p.Path = path;
-            p.Hash = hash;
-            p.SizeBytes = fi.Length;
-            p.ModifiedUtc = fi.LastWriteTimeUtc;
-            if (info != null)
-            {
-                p.PixelWidth = info.PixelWidth;
-                p.PixelHeight = info.PixelHeight;
-                p.Orientation = info.Orientation;
-                p.DateTaken = info.DateTaken ?? p.DateTaken;
-                p.CameraModel = info.CameraModel ?? p.CameraModel;
-                p.DecodeError = null;
-            }
+            p.Path = c.Path;
+            p.Hash = c.Hash;
+            p.SizeBytes = c.SizeBytes;
+            p.ModifiedUtc = c.ModifiedUtc;
+            p.PixelWidth = c.PixelWidth;
+            p.PixelHeight = c.PixelHeight;
+            p.Orientation = c.Orientation;
+            p.DateTaken = c.DateTaken;
+            p.CameraModel = c.CameraModel;
+            p.DecodeError = c.DecodeError;
             p.IsMissing = false;
-            Db.UpdateFileDetails(p);
             p.NotifyAllChanged();
             p.ThumbVersion++;
-            Log.Info($"Relocated photo {p.Id} to {path}");
-            UpdateCounts();
-            UpdateMissingBanner();
-            if (SelectedSection?.Section == LibrarySection.Missing) Reposition(p);
-            if (SelectedPhoto == p) _ = LoadPreviewAsync(p);
-            return true;
+            Log.Info($"Relocated photo {p.Id} to {p.Path}");
         }
-        catch (Exception ex)
-        {
-            Log.Error($"Relocate failed for {path}", ex);
-            Dialogs.Error("Couldn't relocate", Friendly.Describe(ex));
-            return false;
-        }
+        UpdateCounts();
+        UpdateMissingBanner();
+        if (SelectedSection?.Section == LibrarySection.Missing) RefreshView();
+        if (SelectedPhoto is { } sel && updated.Any(u => u.Photo == sel)) _ = LoadPreviewAsync(sel);
+        return updated.Count;
     }
+
+    static Photo WithRelocation(Photo p, Relocation r) => new()
+    {
+        Id = p.Id,
+        Path = r.Path,
+        Hash = r.Hash,
+        SizeBytes = r.Size,
+        ModifiedUtc = r.ModifiedUtc,
+        PixelWidth = r.Info?.PixelWidth ?? p.PixelWidth,
+        PixelHeight = r.Info?.PixelHeight ?? p.PixelHeight,
+        Orientation = r.Info?.Orientation ?? p.Orientation,
+        DateTaken = r.Info?.DateTaken ?? p.DateTaken,
+        CameraModel = r.Info?.CameraModel ?? p.CameraModel,
+        DecodeError = r.Info != null ? null : p.DecodeError,
+        IsMissing = false,
+    };
 
     // ------------------------------------------------------------------ settings
 
