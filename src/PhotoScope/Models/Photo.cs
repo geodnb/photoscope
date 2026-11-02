@@ -79,6 +79,9 @@ public sealed partial class Photo : ObservableObject
     public DateTime EffectiveDate => _effectiveDate ??= DateTaken ?? FileDateLocal;
     public bool HasProblem => IsMissing || DecodeError != null;
 
+    public string DateTakenText => DateTaken is { } d ? d.ToString("f") : $"{FileDateLocal:f} (file date)";
+    public string ImportedText => DateImportedUtc.ToLocalTime().ToString("f");
+
     public string DimensionsText => Width > 0 && Height > 0 ? $"{Width:N0} × {Height:N0}" : "Unknown";
     public string SizeText => FormatBytes(SizeBytes);
 

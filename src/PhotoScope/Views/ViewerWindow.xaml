@@ -1,0 +1,137 @@
+<Window x:Class="PhotoScope.Views.ViewerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:PhotoScope.Controls"
+        Title="PhotoScope Viewer" WindowStyle="None" ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Background="#FF101010" Foreground="White" FontFamily="{StaticResource Font.UI}" FontSize="14"
+        UseLayoutRounding="True" ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- The viewer is always dark, whatever the app theme. -->
+        <SolidColorBrush x:Key="Chrome" Color="#CC1C1C1C"/>
+        <SolidColorBrush x:Key="Brush.Text" Color="White"/>
+        <SolidColorBrush x:Key="Brush.TextSecondary" Color="#C8C8C8"/>
+        <SolidColorBrush x:Key="Brush.TextTertiary" Color="#9A9A9A"/>
+        <SolidColorBrush x:Key="Brush.Subtle" Color="#1FFFFFFF"/>
+        <SolidColorBrush x:Key="Brush.SubtlePressed" Color="#14FFFFFF"/>
+        <SolidColorBrush x:Key="Brush.SelectedFill" Color="#3360CDFF"/>
+        <SolidColorBrush x:Key="Brush.Accent" Color="#60CDFF"/>
+        <SolidColorBrush x:Key="Brush.Control" Color="#2D2D2D"/>
+        <SolidColorBrush x:Key="Brush.ControlHover" Color="#383838"/>
+        <SolidColorBrush x:Key="Brush.ControlBorder" Color="#3B3B3B"/>
+        <SolidColorBrush x:Key="Brush.Flyout" Color="#2C2C2C"/>
+        <Style x:Key="ViewerButton" TargetType="Button" BasedOn="{StaticResource IconButton}">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Width" Value="40"/>
+            <Setter Property="Height" Value="36"/>
+        </Style>
+        <Style x:Key="ViewerToggle" TargetType="ToggleButton" BasedOn="{StaticResource IconToggle}">
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="Width" Value="40"/>
+            <Setter Property="Height" Value="36"/>
+        </Style>
+        <Style x:Key="EdgeButton" TargetType="Button" BasedOn="{StaticResource ViewerButton}">
+            <Setter Property="Width" Value="52"/>
+            <Setter Property="Height" Value="96"/>
+            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="Background" Value="#66000000"/>
+            <Setter Property="c:Ui.HoverBrush" Value="#99000000"/>
+            <Setter Property="c:Ui.CornerRadius" Value="8"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="Root">
+        <!-- Image stage -->
+        <Grid x:Name="Viewport" ClipToBounds="True" Background="Transparent" IsManipulationEnabled="True">
+            <!-- A Canvas never constrains or layout-clips its children, so big images keep their full size. -->
+            <Canvas>
+                <Border x:Name="FadeHost" IsHitTestVisible="False" Opacity="0">
+                    <Image x:Name="FadeImage" Stretch="Fill" RenderOptions.BitmapScalingMode="HighQuality"/>
+                </Border>
+                <Border x:Name="ImageHost">
+                    <Image x:Name="MainImage" Stretch="Fill" RenderOptions.BitmapScalingMode="HighQuality"/>
+                </Border>
+            </Canvas>
+        </Grid>
+
+        <!-- Problem placeholder -->
+        <StackPanel x:Name="Problem" VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="460" Visibility="Collapsed" IsHitTestVisible="False">
+            <TextBlock x:Name="ProblemGlyph" Text="&#xE91B;" Style="{StaticResource Text.Icon}" FontSize="56" Foreground="#9A9A9A" HorizontalAlignment="Center"/>
+            <TextBlock x:Name="ProblemTitle" Text="Can't display this photo" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,16,0,8"/>
+            <TextBlock x:Name="ProblemText" Foreground="#C8C8C8" TextWrapping="Wrap" TextAlignment="Center"/>
+        </StackPanel>
+
+        <TextBlock x:Name="Loading" Text="Loading…" Foreground="#C8C8C8" HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                   Margin="0,0,0,90" Visibility="Collapsed" IsHitTestVisible="False"/>
+
+        <!-- Edge navigation -->
+        <Button x:Name="PrevEdge" AutomationProperties.Name="Previous photo" Style="{StaticResource EdgeButton}" Content="&#xE76B;" HorizontalAlignment="Left" VerticalAlignment="Center"
+                Margin="16,0,0,0" Click="OnPrev" ToolTip="Previous (Left arrow)" Focusable="False"/>
+        <Button x:Name="NextEdge" AutomationProperties.Name="Next photo" Style="{StaticResource EdgeButton}" Content="&#xE76C;" HorizontalAlignment="Right" VerticalAlignment="Center"
+                Margin="0,0,16,0" Click="OnNext" ToolTip="Next (Right arrow)" Focusable="False"/>
+
+        <!-- Top bar -->
+        <Border x:Name="TopBar" VerticalAlignment="Top" Background="{StaticResource Chrome}" Padding="16,8,8,8">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <ToggleButton x:Name="FavButton" Style="{StaticResource ViewerToggle}" Content="&#xEB51;" Click="OnFavourite" AutomationProperties.Name="Favourite" ToolTip="Favourite (F)" Focusable="False"/>
+                    <StackPanel x:Name="Stars" Orientation="Horizontal" Margin="4,0,8,0" VerticalAlignment="Center" ToolTip="Rating (0–5)"/>
+                    <Button Style="{StaticResource ViewerButton}" Content="&#xE7AD;" Click="OnRotateLeft" AutomationProperties.Name="Rotate left" ToolTip="Rotate left (Shift+R)" Focusable="False">
+                        <Button.LayoutTransform>
+                            <ScaleTransform ScaleX="-1"/>
+                        </Button.LayoutTransform>
+                    </Button>
+                    <Button Style="{StaticResource ViewerButton}" Content="&#xE7AD;" Click="OnRotateRight" AutomationProperties.Name="Rotate right" ToolTip="Rotate right (R)" Focusable="False"/>
+                    <Border Width="1" Margin="6,6" Background="#33FFFFFF"/>
+                    <Button x:Name="FitButton" Style="{StaticResource ViewerButton}" Content="&#xE9A6;" Click="OnFit" AutomationProperties.Name="Fit" ToolTip="Fit to screen (Ctrl+0)" Focusable="False"/>
+                    <Button x:Name="ActualButton" Style="{StaticResource ViewerButton}" Click="OnActualSize" AutomationProperties.Name="Actual size" ToolTip="Actual size, 1:1 (Ctrl+1)" Focusable="False"
+                            FontFamily="{StaticResource Font.UI}" FontSize="13" FontWeight="SemiBold" Content="1:1"/>
+                    <ToggleButton x:Name="InfoButton" Style="{StaticResource ViewerToggle}" Content="&#xE946;" Click="OnInfo" AutomationProperties.Name="Info" ToolTip="Info (I)" Focusable="False"/>
+                    <Button x:Name="PlayButton" AutomationProperties.Name="Play" Style="{StaticResource ViewerButton}" Content="&#xE768;" Click="OnPlayPause" ToolTip="Slideshow (Space)" Focusable="False"/>
+                    <Border Width="1" Margin="6,6" Background="#33FFFFFF"/>
+                    <Button Style="{StaticResource ViewerButton}" Content="&#xE711;" Click="OnClose" AutomationProperties.Name="Close viewer" ToolTip="Close (Esc)" Focusable="False"/>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock x:Name="FileNameText" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" MaxWidth="700"/>
+                    <TextBlock x:Name="PositionText" Foreground="#C8C8C8" Margin="14,0,0,0"/>
+                    <TextBlock x:Name="ZoomText" Foreground="#C8C8C8" Margin="14,0,0,0"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Slideshow controls -->
+        <Border x:Name="SlideBar" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,28"
+                Background="{StaticResource Chrome}" CornerRadius="10" Padding="8,6" Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource ViewerButton}" Content="&#xE892;" Click="OnPrev" ToolTip="Previous" Focusable="False"/>
+                <Button x:Name="SlidePlay" AutomationProperties.Name="Pause or play" Style="{StaticResource ViewerButton}" Content="&#xE769;" Click="OnPlayPause" ToolTip="Pause / play (Space)" Focusable="False"/>
+                <Button Style="{StaticResource ViewerButton}" Content="&#xE893;" Click="OnNext" ToolTip="Next" Focusable="False"/>
+                <Border Width="1" Margin="8,6" Background="#33FFFFFF"/>
+                <TextBlock Text="Every" VerticalAlignment="Center" Foreground="#C8C8C8" Margin="4,0,8,0"/>
+                <ComboBox x:Name="IntervalBox" Width="92" VerticalAlignment="Center" SelectionChanged="OnIntervalChanged" Focusable="False"/>
+                <ToggleButton x:Name="ShuffleButton" Style="{StaticResource ViewerToggle}" Content="&#xE8B1;" Margin="8,0,0,0"
+                              Click="OnShuffle" AutomationProperties.Name="Shuffle" ToolTip="Shuffle" Focusable="False"/>
+                <ToggleButton x:Name="LoopButton" Style="{StaticResource ViewerToggle}" Content="&#xE8EE;" Click="OnLoop" AutomationProperties.Name="Loop" ToolTip="Loop" Focusable="False"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Info overlay -->
+        <Border x:Name="InfoPanel" VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="24,0,0,28" MaxWidth="480"
+                Background="{StaticResource Chrome}" CornerRadius="10" Padding="18,14" Visibility="Collapsed" IsHitTestVisible="False">
+            <StackPanel>
+                <TextBlock x:Name="InfoName" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                <Grid x:Name="InfoGrid">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                </Grid>
+            </StackPanel>
+        </Border>
+
+        <!-- Transient message -->
+        <Border x:Name="Toast" VerticalAlignment="Center" HorizontalAlignment="Center" Background="{StaticResource Chrome}"
+                CornerRadius="10" Padding="20,12" Opacity="0" IsHitTestVisible="False">
+            <TextBlock x:Name="ToastText" FontSize="16"/>
+        </Border>
+    </Grid>
+</Window>

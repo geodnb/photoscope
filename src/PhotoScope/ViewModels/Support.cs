@@ -42,10 +42,10 @@ public sealed partial class Banner : ObservableObject
 
     public string Glyph => Kind switch
     {
-        BannerKind.Success => "",
-        BannerKind.Warning => "",
-        BannerKind.Error => "",
-        _ => "",
+        BannerKind.Success => "\uE73E",
+        BannerKind.Warning => "\uE7BA",
+        BannerKind.Error => "\uEA39",
+        _ => "\uE946",
     };
 }
 

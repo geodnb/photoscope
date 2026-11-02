@@ -10,4 +10,5 @@ public sealed partial class MainViewModel
     void RemoveFromLoadedPlaylist(HashSet<Photo> removed) { }
     void RelocateMissing(IReadOnlyList<Photo> photos) { }
     void RemoveFromLibrary(IReadOnlyList<Photo> photos) { }
+    public IReadOnlyCollection<Photo> DeleteInteractive(IReadOnlyList<Photo> photos) => [];
 }

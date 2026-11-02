@@ -20,6 +20,7 @@ public partial class MainWindow
         _vm = vm;
         DataContext = vm;
         RestoreLayout();
+        App.AddSnapshotHook(this, RootGrid);
 
         Loaded += (_, _) =>
         {
@@ -34,6 +35,7 @@ public partial class MainWindow
         Gallery.PreviewMouseWheel += OnGalleryPreviewMouseWheel;
 
         _vm.ViewReset += OnViewReset;
+        _vm.PropertyChanged += OnVmPropertyChanged;
         _vm.RevealRequested += photo =>
         {
             Gallery.SelectedItem = photo;
@@ -61,6 +63,35 @@ public partial class MainWindow
         }
         if (s.WindowMaximized) WindowState = WindowState.Maximized;
         SidebarColumn.Width = new GridLength(s.SidebarWidth);
+        _vm.IsPreviewVisible = s.PreviewVisible;
+        _vm.IsPlaylistVisible = s.PlaylistVisible;
+        ApplyPanelVisibility();
+    }
+
+    void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(MainViewModel.IsPreviewVisible) or nameof(MainViewModel.IsPlaylistVisible))
+        {
+            SaveLayout();
+            ApplyPanelVisibility();
+        }
+    }
+
+    /// <summary>Shows or hides the docked panes, restoring their saved sizes.</summary>
+    void ApplyPanelVisibility()
+    {
+        var s = _vm.Settings;
+        var preview = _vm.IsPreviewVisible;
+        PreviewPane.Visibility = preview ? Visibility.Visible : Visibility.Collapsed;
+        PreviewSplitter.Visibility = PreviewPane.Visibility;
+        PreviewColumn.MinWidth = preview ? 220 : 0;
+        PreviewColumn.Width = preview ? new GridLength(s.PreviewWidth) : new GridLength(0);
+
+        var playlist = _vm.IsPlaylistVisible && PlaylistPane.Child != null;
+        PlaylistPane.Visibility = playlist ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistSplitter.Visibility = PlaylistPane.Visibility;
+        PlaylistRow.MinHeight = playlist ? 120 : 0;
+        PlaylistRow.Height = playlist ? new GridLength(s.PlaylistHeight) : new GridLength(0);
     }
 
     static bool IsOnScreen(double left, double top, double width, double height)
@@ -83,7 +114,9 @@ public partial class MainWindow
             s.WindowHeight = bounds.Height;
         }
         s.WindowMaximized = WindowState == WindowState.Maximized;
-        s.SidebarWidth = SidebarColumn.ActualWidth;
+        if (SidebarColumn.ActualWidth > 0) s.SidebarWidth = SidebarColumn.ActualWidth;
+        if (PreviewPane.Visibility == Visibility.Visible && PreviewColumn.ActualWidth > 0) s.PreviewWidth = PreviewColumn.ActualWidth;
+        if (PlaylistPane.Visibility == Visibility.Visible && PlaylistRow.ActualHeight > 0) s.PlaylistHeight = PlaylistRow.ActualHeight;
     }
 
     void OnSplitterDragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
@@ -122,6 +155,55 @@ public partial class MainWindow
         }
         _vm.SetSelection(Gallery.SelectedItems, keep.Contains(_vm.SelectedPhoto!) ? _vm.SelectedPhoto : keep.FirstOrDefault());
         if (_vm.SelectedPhoto != null) Gallery.ScrollIntoView(_vm.SelectedPhoto);
+    }
+
+    // ------------------------------------------------------------------ gallery input
+
+    void OnGalleryDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left) return;
+        if (ItemsControl.ContainerFromElement(Gallery, (DependencyObject)e.OriginalSource) is ListBoxItem { DataContext: Photo p })
+        {
+            e.Handled = true;
+            _vm.OpenViewerCommand.Execute(p);
+        }
+    }
+
+    void OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2 && _vm.SelectedPhoto is { } p)
+        {
+            e.Handled = true;
+            _vm.OpenViewerCommand.Execute(p);
+        }
+    }
+
+    void OnGalleryKeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) || Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)) return;
+        var handled = true;
+        switch (e.Key)
+        {
+            case Key.Enter:
+                _vm.OpenViewerCommand.Execute(_vm.SelectedPhoto);
+                break;
+            case Key.F:
+                _vm.ToggleFavouriteSelectedCommand.Execute(null);
+                break;
+            case >= Key.D0 and <= Key.D5:
+                _vm.SetRatingSelectedCommand.Execute(e.Key - Key.D0);
+                break;
+            case >= Key.NumPad0 and <= Key.NumPad5:
+                _vm.SetRatingSelectedCommand.Execute(e.Key - Key.NumPad0);
+                break;
+            case Key.Delete:
+                _vm.DeleteInteractive(_vm.SelectedPhotos);
+                break;
+            default:
+                handled = false;
+                break;
+        }
+        e.Handled = handled;
     }
 
     // ------------------------------------------------------------------ input

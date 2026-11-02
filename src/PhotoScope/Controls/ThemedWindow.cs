@@ -16,5 +16,6 @@ public class ThemedWindow : Window
         UseLayoutRounding = true;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
         SourceInitialized += (_, _) => ThemeService.ApplyTitleBar(this);
+        App.SendToBack(this);
     }
 }

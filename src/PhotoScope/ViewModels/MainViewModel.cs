@@ -36,10 +36,10 @@ public sealed partial class MainViewModel : ObservableObject
 
         Sections =
         [
-            new NavEntry(LibrarySection.All, "All Photos", ""),
-            new NavEntry(LibrarySection.Favourites, "Favourites", ""),
-            new NavEntry(LibrarySection.Recent, "Recently Imported", ""),
-            new NavEntry(LibrarySection.Missing, "Missing Files", "") { IsVisible = false },
+            new NavEntry(LibrarySection.All, "All Photos", "\uE91B"),
+            new NavEntry(LibrarySection.Favourites, "Favourites", "\uEB51"),
+            new NavEntry(LibrarySection.Recent, "Recently Imported", "\uE823"),
+            new NavEntry(LibrarySection.Missing, "Missing Files", "\uE7BA") { IsVisible = false },
         ];
 
         _suppressRefresh = true;

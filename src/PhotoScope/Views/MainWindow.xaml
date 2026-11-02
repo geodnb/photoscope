@@ -40,13 +40,13 @@
                 <Border Width="24" Height="24" CornerRadius="12" Background="#8C000000" Margin="6"
                         HorizontalAlignment="Left" VerticalAlignment="Bottom"
                         Visibility="{Binding IsFavourite, Converter={StaticResource BoolToVis}}">
-                    <TextBlock Text="&#xE735;" Style="{StaticResource Text.Icon}" FontSize="12" Foreground="#FFC83D" HorizontalAlignment="Center"/>
+                    <TextBlock Text="&#xEB52;" Style="{StaticResource Text.Icon}" FontSize="12" Foreground="#FF6B81" HorizontalAlignment="Center"/>
                 </Border>
             </Grid>
         </DataTemplate>
     </c:ThemedWindow.Resources>
 
-    <Grid>
+    <Grid x:Name="RootGrid">
         <Grid.ColumnDefinitions>
             <ColumnDefinition x:Name="SidebarColumn" Width="232" MinWidth="160" MaxWidth="480"/>
             <ColumnDefinition Width="Auto"/>
@@ -100,6 +100,18 @@
         <!-- ============================ Main area ============================ -->
         <Border Grid.Column="2" Background="{DynamicResource Brush.Content}" BorderBrush="{DynamicResource Brush.Divider}"
                 BorderThickness="1,1,0,0" CornerRadius="8,0,0,0">
+          <Grid x:Name="ContentGrid">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" MinHeight="200"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition x:Name="PlaylistRow" Height="0"/>
+            </Grid.RowDefinitions>
+            <Grid>
+              <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" MinWidth="320"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition x:Name="PreviewColumn" Width="340" MinWidth="0" MaxWidth="900"/>
+              </Grid.ColumnDefinitions>
             <DockPanel>
                 <!-- Toolbar -->
                 <Grid DockPanel.Dock="Top" Margin="20,14,16,6">
@@ -149,6 +161,17 @@
                             <Slider Width="120" Minimum="80" Maximum="320" SmallChange="10" LargeChange="40" Margin="8,0" VerticalAlignment="Center"
                                     Value="{Binding ThumbnailSize}" ToolTip="Thumbnail size (Ctrl + mouse wheel)"/>
                             <TextBlock Text="&#xE80A;" Style="{StaticResource Text.Icon}" FontSize="18" Foreground="{DynamicResource Brush.TextSecondary}"/>
+                            <Border Width="1" Margin="12,6" Background="{DynamicResource Brush.Divider}"/>
+                            <Button Command="{Binding SlideshowCommand}" ToolTip="Slideshow of this view (or of the selected photos)">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="&#xE768;" Style="{StaticResource Text.Icon}" FontSize="13" Margin="0,0,8,0"/>
+                                    <TextBlock Text="Slideshow"/>
+                                </StackPanel>
+                            </Button>
+                            <ToggleButton Style="{StaticResource IconToggle}" Content="&#xE8A1;" Margin="8,0,0,0" IsChecked="{Binding IsPreviewVisible}"
+                                          ToolTip="Show or hide the details pane"/>
+                            <ToggleButton x:Name="PlaylistToggle" Style="{StaticResource IconToggle}" Content="&#xE8FD;" IsChecked="{Binding IsPlaylistVisible}"
+                                          ToolTip="Show or hide the playlist panel" Visibility="Collapsed"/>
                         </StackPanel>
                     </DockPanel>
                 </Grid>
@@ -212,12 +235,13 @@
 
                 <!-- Gallery -->
                 <Grid>
-                    <c:GalleryListBox x:Name="Gallery" ItemsSource="{Binding Photos}" SelectionMode="Extended" Padding="12,2,6,8"
+                    <c:GalleryListBox x:Name="Gallery" Style="{StaticResource {x:Type ListBox}}" ItemsSource="{Binding Photos}" SelectionMode="Extended" Padding="12,2,6,8"
                                       ItemContainerStyle="{StaticResource TileItem}" ItemTemplate="{StaticResource TileTemplate}"
                                       VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
                                       VirtualizingPanel.CacheLengthUnit="Page" VirtualizingPanel.CacheLength="1,1"
                                       ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                      SelectionChanged="OnGallerySelectionChanged">
+                                      SelectionChanged="OnGallerySelectionChanged" MouseDoubleClick="OnGalleryDoubleClick"
+                                      KeyDown="OnGalleryKeyDown">
                         <ListBox.ItemsPanel>
                             <ItemsPanelTemplate>
                                 <vwp:VirtualizingWrapPanel ItemSize="{Binding TileSize}" SpacingMode="Uniform" StretchItems="False"
@@ -266,6 +290,117 @@
                                Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}"/>
                 </Grid>
             </DockPanel>
+
+            <GridSplitter x:Name="PreviewSplitter" Grid.Column="1" Width="4" HorizontalAlignment="Center" VerticalAlignment="Stretch"
+                          ResizeBehavior="PreviousAndNext" Style="{StaticResource Splitter}" DragCompleted="OnSplitterDragCompleted"/>
+
+            <!-- ============================ Preview pane ============================ -->
+            <Border x:Name="PreviewPane" Grid.Column="2" BorderBrush="{DynamicResource Brush.Divider}" BorderThickness="1,0,0,0">
+                <Grid Margin="16,16,16,14">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Visibility="{Binding SelectedPhoto, Converter={StaticResource NullToVis}}">
+                        <TextBlock Text="&#xE8B9;" Style="{StaticResource Text.Icon}" FontSize="36" HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource Brush.TextTertiary}"/>
+                        <TextBlock Text="Select a photo to see its details" Style="{StaticResource Text.Caption}" FontSize="13"
+                                   Margin="0,12,0,0" HorizontalAlignment="Center"/>
+                    </StackPanel>
+
+                    <Grid Visibility="{Binding SelectedPhoto, Converter={StaticResource NotNullToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" MinHeight="140"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Border x:Name="PreviewBox" CornerRadius="6" Background="{DynamicResource Brush.Tile}" Cursor="Hand"
+                                ToolTip="Double-click to open the viewer" MouseLeftButtonDown="OnPreviewMouseDown">
+                            <Grid>
+                                <Image Source="{Binding PreviewImage}" Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality">
+                                    <Image.LayoutTransform>
+                                        <RotateTransform Angle="{Binding SelectedPhoto.Rotation}"/>
+                                    </Image.LayoutTransform>
+                                </Image>
+                                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Margin="16"
+                                            Visibility="{Binding PreviewError, Converter={StaticResource NotNullToVis}}">
+                                    <TextBlock Text="&#xE91B;" Style="{StaticResource Text.Icon}" FontSize="30" HorizontalAlignment="Center"
+                                               Foreground="{DynamicResource Brush.TextTertiary}"/>
+                                    <TextBlock Text="Can&#x2019;t display this photo" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,4"/>
+                                    <TextBlock Text="{Binding PreviewError}" Style="{StaticResource Text.Caption}" TextAlignment="Center" TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,14,0,0">
+                            <StackPanel x:Name="DetailsPanel">
+                                <TextBlock Text="{Binding SelectedPhoto.FileName}" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                <TextBlock Text="{Binding SelectionSummary}" Style="{StaticResource Text.Caption}" Margin="0,2,0,0"
+                                           Visibility="{Binding SelectionSummary, Converter={StaticResource NotNullToVis}}"/>
+
+                                <!-- MANAGEMENT_SLOT -->
+
+                                <StackPanel x:Name="InfoRows" Margin="0,12,0,0">
+                                    <StackPanel.Resources>
+                                        <Style x:Key="Label" TargetType="TextBlock" BasedOn="{StaticResource Text.Caption}">
+                                            <Setter Property="Width" Value="92"/>
+                                            <Setter Property="FontSize" Value="13"/>
+                                        </Style>
+                                        <Style TargetType="DockPanel">
+                                            <Setter Property="Margin" Value="0,3"/>
+                                        </Style>
+                                    </StackPanel.Resources>
+                                    <DockPanel>
+                                        <TextBlock Text="Dimensions" Style="{StaticResource Label}"/>
+                                        <TextBlock Text="{Binding SelectedPhoto.DimensionsText}" FontSize="13" TextWrapping="Wrap"/>
+                                    </DockPanel>
+                                    <DockPanel>
+                                        <TextBlock Text="File size" Style="{StaticResource Label}"/>
+                                        <TextBlock Text="{Binding SelectedPhoto.SizeText}" FontSize="13"/>
+                                    </DockPanel>
+                                    <DockPanel>
+                                        <TextBlock Text="Date taken" Style="{StaticResource Label}"/>
+                                        <TextBlock Text="{Binding SelectedPhoto.DateTakenText}" FontSize="13" TextWrapping="Wrap"/>
+                                    </DockPanel>
+                                    <DockPanel Visibility="{Binding SelectedPhoto.CameraModel, Converter={StaticResource NotNullToVis}}">
+                                        <TextBlock Text="Camera" Style="{StaticResource Label}"/>
+                                        <TextBlock Text="{Binding SelectedPhoto.CameraModel}" FontSize="13" TextWrapping="Wrap"/>
+                                    </DockPanel>
+                                    <DockPanel>
+                                        <TextBlock Text="Imported" Style="{StaticResource Label}"/>
+                                        <TextBlock Text="{Binding SelectedPhoto.ImportedText}" FontSize="13" TextWrapping="Wrap"/>
+                                    </DockPanel>
+                                    <DockPanel>
+                                        <TextBlock Text="Path" Style="{StaticResource Label}" VerticalAlignment="Top"/>
+                                        <TextBox Text="{Binding SelectedPhoto.Path, Mode=OneWay}" Style="{StaticResource ReadOnlyText}" FontSize="13"/>
+                                    </DockPanel>
+                                </StackPanel>
+
+                                <Border Margin="0,12,0,0" Padding="10,8" CornerRadius="6" Background="{DynamicResource Brush.WarningBg}"
+                                        Visibility="{Binding SelectedPhoto.IsMissing, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock TextWrapping="Wrap" FontSize="13"
+                                               Text="This file can&#x2019;t be found. Use Relocate to point PhotoScope at its new location, or remove it from the library."/>
+                                </Border>
+
+                                <WrapPanel x:Name="PreviewButtons" Margin="0,14,0,0">
+                                    <Button Command="{Binding OpenViewerCommand}" Margin="0,0,8,8" ToolTip="Open in the full viewer (Enter)">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="&#xE740;" Style="{StaticResource Text.Icon}" FontSize="13" Margin="0,0,8,0"/>
+                                            <TextBlock Text="Open"/>
+                                        </StackPanel>
+                                    </Button>
+                                </WrapPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+                </Grid>
+            </Border>
+            </Grid>
+
+            <GridSplitter x:Name="PlaylistSplitter" Grid.Row="1" Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                          ResizeBehavior="PreviousAndNext" Style="{StaticResource Splitter}" DragCompleted="OnSplitterDragCompleted"
+                          Visibility="Collapsed"/>
+
+            <!-- ============================ Playlist panel ============================ -->
+            <Border x:Name="PlaylistPane" Grid.Row="2" BorderBrush="{DynamicResource Brush.Divider}" BorderThickness="0,1,0,0"
+                    Visibility="Collapsed"/>
+          </Grid>
         </Border>
     </Grid>
 </c:ThemedWindow>
