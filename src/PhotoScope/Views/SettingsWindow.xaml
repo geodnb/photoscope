@@ -1,0 +1,107 @@
+<c:ThemedWindow x:Class="PhotoScope.Views.SettingsWindow"
+                xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                xmlns:c="clr-namespace:PhotoScope.Controls"
+                Title="Settings" Width="620" Height="720" MinHeight="420" ResizeMode="CanResize"
+                ShowInTaskbar="False" WindowStartupLocation="CenterOwner">
+    <c:ThemedWindow.Resources>
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource Brush.Card}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource Brush.ControlBorder}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="18,14"/>
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+    </c:ThemedWindow.Resources>
+    <DockPanel>
+        <Border DockPanel.Dock="Bottom" Padding="24,14,24,18" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource Brush.Divider}">
+            <DockPanel>
+                <Button DockPanel.Dock="Left" Style="{StaticResource LinkButton}" Content="Open log folder" Click="OnOpenLogs" VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Save" Style="{StaticResource AccentButton}" MinWidth="110" IsDefault="True" Click="OnSave"/>
+                    <Button Content="Cancel" MinWidth="110" Margin="8,0,0,0" IsCancel="True"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="24,20,24,8">
+                <TextBlock Text="Settings" Style="{StaticResource Text.Title}" Margin="0,0,0,16"/>
+
+                <!-- Appearance -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Appearance" Style="{StaticResource Text.Subtitle}" Margin="0,0,0,10"/>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="ThemeSystem" Content="Use Windows setting" GroupName="Theme" Margin="0,0,24,0"/>
+                            <RadioButton x:Name="ThemeLight" Content="Light" GroupName="Theme" Margin="0,0,24,0"/>
+                            <RadioButton x:Name="ThemeDark" Content="Dark" GroupName="Theme"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Import -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Import" Style="{StaticResource Text.Subtitle}" Margin="0,0,0,4"/>
+                        <TextBlock Text="Library folder (used by &#x201C;Copy into library folder&#x201D;; photos are sorted into Year\Month)"
+                                   Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,4,0,6"/>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right" Content="Browse…" Margin="8,0,0,0" Click="OnBrowseLibrary"/>
+                            <TextBox x:Name="LibraryFolderBox"/>
+                        </DockPanel>
+                        <TextBlock x:Name="LibraryFolderError" Foreground="{DynamicResource Brush.Danger}" TextWrapping="Wrap" Margin="0,4,0,0" Visibility="Collapsed"/>
+                        <TextBlock Text="Default import mode" Style="{StaticResource Text.Caption}" Margin="0,14,0,6"/>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton x:Name="ModeReference" Content="Reference in place" GroupName="Mode" Margin="0,0,24,0"/>
+                            <RadioButton x:Name="ModeCopy" Content="Copy into library folder" GroupName="Mode"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Slideshow -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Slideshow" Style="{StaticResource Text.Subtitle}" Margin="0,0,0,10"/>
+                        <DockPanel>
+                            <TextBlock x:Name="IntervalText" DockPanel.Dock="Right" Width="64" TextAlignment="Right" VerticalAlignment="Center"/>
+                            <TextBlock Text="Interval" VerticalAlignment="Center" Width="80"/>
+                            <Slider x:Name="IntervalSlider" Minimum="1" Maximum="60" SmallChange="1" LargeChange="5" IsSnapToTickEnabled="True"
+                                    TickFrequency="1" VerticalAlignment="Center" ValueChanged="OnIntervalChanged"/>
+                        </DockPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                            <CheckBox x:Name="ShuffleBox" Content="Shuffle" Margin="0,0,24,0"/>
+                            <CheckBox x:Name="LoopBox" Content="Loop"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Thumbnail cache -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Thumbnail cache" Style="{StaticResource Text.Subtitle}" Margin="0,0,0,4"/>
+                        <TextBlock Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
+                                   Text="Small previews kept on disk so the gallery loads quickly. Clearing it never touches your photos; thumbnails are rebuilt as needed."/>
+                        <DockPanel>
+                            <ComboBox x:Name="CacheLimitBox" DockPanel.Dock="Right" Width="140"/>
+                            <TextBlock Text="Maximum size" VerticalAlignment="Center"/>
+                        </DockPanel>
+                        <DockPanel Margin="0,12,0,0">
+                            <Button x:Name="ClearCacheButton" DockPanel.Dock="Right" Content="Clear cache" Click="OnClearCache"/>
+                            <TextBlock x:Name="CacheUsage" Style="{StaticResource Text.Caption}" VerticalAlignment="Center" Text="Measuring…"/>
+                        </DockPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- About -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="About" Style="{StaticResource Text.Subtitle}" Margin="0,0,0,6"/>
+                        <TextBlock x:Name="AboutText" Style="{StaticResource Text.Caption}" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</c:ThemedWindow>

@@ -22,27 +22,27 @@ public static partial class GalleryMenu
             return mi;
         }
 
-        menu.Items.Add(Item("Open", "", () => vm.OpenViewerCommand.Execute(single ?? vm.SelectedPhoto), "Enter"));
-        menu.Items.Add(Item(photos.Count > 1 ? $"Slideshow of {photos.Count:N0} photos" : "Slideshow from here", "",
+        menu.Items.Add(Item("Open", "\uE740", () => vm.OpenViewerCommand.Execute(single ?? vm.SelectedPhoto), "Enter"));
+        menu.Items.Add(Item(photos.Count > 1 ? $"Slideshow of {photos.Count:N0} photos" : "Slideshow from here", "\uE768",
             () => vm.SlideshowCommand.Execute(null)));
         menu.Items.Add(new Separator());
 
         // Add to playlist ▸
         var add = new MenuItem { Header = "Add to playlist" };
-        Ui.SetIcon(add, "");
+        Ui.SetIcon(add, "\uE8FD");
         foreach (var pl in vm.Playlists)
             add.Items.Add(Item(pl.Name, "", () => vm.AddSelectedToPlaylistCommand.Execute(pl)));
         if (vm.Playlists.Count > 0) add.Items.Add(new Separator());
-        add.Items.Add(Item("New playlist…", "", () => vm.AddSelectedToPlaylistCommand.Execute(null)));
+        add.Items.Add(Item("New playlist…", "\uE710", () => vm.AddSelectedToPlaylistCommand.Execute(null)));
         menu.Items.Add(add);
         menu.Items.Add(new Separator());
 
         var allFav = photos.All(p => p.IsFavourite);
-        menu.Items.Add(Item(allFav ? "Remove from favourites" : "Add to favourites", allFav ? "" : "",
+        menu.Items.Add(Item(allFav ? "Remove from favourites" : "Add to favourites", allFav ? "\uEB52" : "\uEB51",
             () => vm.ToggleFavourite(photos), "F"));
 
         var rating = new MenuItem { Header = "Rating" };
-        Ui.SetIcon(rating, "");
+        Ui.SetIcon(rating, "\uE734");
         for (var r = 0; r <= 5; r++)
         {
             var value = r;
@@ -52,8 +52,8 @@ public static partial class GalleryMenu
         }
         menu.Items.Add(rating);
 
-        menu.Items.Add(Item("Rotate left", "", () => vm.Rotate(photos, -90)));
-        menu.Items.Add(Item("Rotate right", "", () => vm.Rotate(photos, 90)));
+        menu.Items.Add(Item("Rotate left", "\uE7AD", () => vm.Rotate(photos, -90)));
+        menu.Items.Add(Item("Rotate right", "\uE7AD", () => vm.Rotate(photos, 90)));
 
         AddManagementItems(menu, vm, photos, single, Item);
         return menu;

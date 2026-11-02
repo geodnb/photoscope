@@ -58,6 +58,20 @@ public partial class MainWindow
             if (PlaylistList.IsKeyboardFocusWithin || PlaylistList.IsMouseOver) _vm.IsPlaylistVisible = true;
         };
         Gallery.ContextMenuOpening += OnGalleryContextMenuOpening;
+        TagsBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter) { CommitTags(); e.Handled = true; }
+            else if (e.Key == Key.Escape) { TagsBox.Text = _vm.SelectedPhoto?.Tags ?? ""; Gallery.Focus(); e.Handled = true; }
+        };
+        TagsBox.GotKeyboardFocus += (_, _) => _tagsFor = _vm.SelectedPhoto;
+        TagsBox.LostKeyboardFocus += (_, _) => { if (_tagsFor != null) CommitTags(); };
+        _vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(MainViewModel.SelectedPhoto)) return;
+            if (_tagsFor != null && _tagsFor != _vm.SelectedPhoto) CommitTags();
+            TagsBox.Text = _vm.SelectedPhoto?.Tags ?? "";
+            if (TagsBox.IsKeyboardFocusWithin) _tagsFor = _vm.SelectedPhoto;
+        };
         Gallery.ContextMenu = new ContextMenu();
 
         _vm.ViewReset += OnViewReset;
@@ -223,7 +237,10 @@ public partial class MainWindow
                 _vm.SetRatingSelectedCommand.Execute(e.Key - Key.NumPad0);
                 break;
             case Key.Delete:
-                _vm.DeleteInteractive(_vm.SelectedPhotos);
+                _vm.DeleteSelectedCommand.Execute(null);
+                break;
+            case Key.F2:
+                _vm.RenameSelectedCommand.Execute(null);
                 break;
             default:
                 handled = false;
@@ -368,6 +385,17 @@ public partial class MainWindow
             e.Handled = true;
             _vm.PlayPlaylistCommand.Execute(p);
         }
+    }
+
+    Photo? _tagsFor;
+
+    void CommitTags()
+    {
+        // Tags apply to the photo they were typed for, even if the selection moved on.
+        var p = _tagsFor ?? _vm.SelectedPhoto;
+        _tagsFor = null;
+        if (p != null && TagsBox.Text != p.Tags) _vm.SetTags(p, TagsBox.Text);
+        if (_vm.SelectedPhoto != null) TagsBox.Text = _vm.SelectedPhoto.Tags;
     }
 
     // ------------------------------------------------------------------ gallery context menu

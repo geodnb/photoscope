@@ -671,13 +671,23 @@ public partial class ViewerWindow
         UpdateInfo(_shown);
     }
 
-    void DeleteShown()
+    async void DeleteShown()
     {
         if (_shown == null) return;
         var wasPlaying = _playing;
         if (wasPlaying) Pause();
         Mouse.OverrideCursor = null;
-        var removed = _vm.DeleteInteractive([_shown]);
+        IReadOnlyCollection<Photo> removed;
+        try
+        {
+            removed = await _vm.DeleteInteractiveAsync([_shown]);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Delete from viewer failed", ex);
+            removed = [];
+        }
+        if (!IsLoaded) return;
         if (removed.Count == 0)
         {
             if (wasPlaying) StartSlideshow();
