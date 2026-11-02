@@ -69,11 +69,14 @@ a playlist in the sidebar, or use right-click > Add to playlist), drag to reorde
   the image files are never rewritten.
 - Rename (validated: no illegal or reserved names, no overwriting), Move to folder, Copy to folder.
 - Open containing folder, Show in Explorer.
-- Delete offers **Remove from library** (file untouched) or **Move to Recycle Bin**. There is no permanent delete.
-  Before deleting, PhotoScope works out where the file really lives (through junctions, mount points and subst
-  drives) and refuses, leaving the file alone, if Windows would delete it permanently: network shares, removable
-  drives, drives whose Recycle Bin is set to *Remove files immediately when deleted*, files bigger than the bin,
-  or a policy that disables the bin.
+- Delete offers **Remove from library** (file untouched) or **Move to Recycle Bin**. There is no permanent delete:
+  - First PhotoScope checks where the file really lives (through junctions, mount points and subst drives) and
+    refuses network shares, removable drives, subst drives, drives whose Recycle Bin is set to *Remove files
+    immediately when deleted*, files bigger than the bin, and a policy that turns the bin off.
+  - Then it asks Windows (IFileOperation) to recycle the file silently. If Windows reports that the file wouldn't
+    go to the Recycle Bin, the operation is aborted before anything happens. No "permanently delete?" prompt is
+    ever shown.
+  - Either way, a file that can't be recycled is left exactly where it was, and you're told why.
 - Missing files (moved or deleted outside the app, or on a disconnected drive) are flagged on startup and can be
   relocated (pick the file, or let PhotoScope search a folder by name, size and content) or removed.
 
@@ -119,6 +122,8 @@ shuffle and loop, thumbnail cache size with Clear cache.
 ## Notes
 
 - Importing from OneDrive folders with online-only files downloads them, because each file has to be read to hash it.
+- Photos on network shares load through their own queue with timeouts. A share that stops responding is skipped for
+  a minute at a time and never holds up local photos.
 - The full viewer first decodes at screen size and loads full resolution (up to 8192 px on the long side) when you
   zoom in; larger images are shown slightly downscaled at 1:1.
 - Photos that fail because a codec is missing are retried each time PhotoScope starts, so installing the WebP or

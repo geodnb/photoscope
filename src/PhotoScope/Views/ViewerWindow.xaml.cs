@@ -162,17 +162,21 @@ public partial class ViewerWindow
         var (path, w, h, orientation) = (p.Path, p.PixelWidth, p.PixelHeight, p.Orientation);
         var id = p.Id;
         var originalLong = Math.Max(w, h);
+        // Network files don't take a local decode slot (their own thread + timeout instead), so a
+        // dead share can never delay decoding a local photo.
+        var network = NetworkPaths.IsNetwork(path);
         return Task.Run(async () =>
         {
-            await _decodeGate.WaitAsync();
+            if (!network) await _decodeGate.WaitAsync();
             try
             {
                 // The user may have moved on while this waited in the queue: don't decode for nothing.
                 if (checkWanted)
                     lock (_wanted)
                         if (!_wanted.Contains(id)) return new Decoded(null, null, false, Skipped: true);
-                if (!File.Exists(path)) return new Decoded(null, "This file can't be found. It may have been moved, renamed or deleted.", true);
-                var bmp = ImageDecoder.Decode(path, maxSide, w, h, orientation);
+                var bmp = await NetworkPaths.RunAsync(path, () => File.Exists(path) ? ImageDecoder.Decode(path, maxSide, w, h, orientation) : null,
+                    NetworkPaths.ReadTimeout);
+                if (bmp == null) return new Decoded(null, "This file can't be found. It may have been moved, renamed or deleted.", true);
                 var reduced = originalLong > 0 && Math.Max(bmp.PixelWidth, bmp.PixelHeight) < Math.Min(originalLong, ImageDecoder.MaxViewerSide);
                 return new Decoded(bmp, null, false, reduced);
             }
@@ -183,7 +187,7 @@ public partial class ViewerWindow
             }
             finally
             {
-                _decodeGate.Release();
+                if (!network) _decodeGate.Release();
             }
         });
     }

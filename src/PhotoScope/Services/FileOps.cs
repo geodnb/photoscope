@@ -1,19 +1,22 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.VisualBasic.FileIO;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace PhotoScope.Services;
 
 /// <summary>An error whose message is already written for the user.</summary>
-public sealed class UserFacingException(string message) : Exception(message);
+public class UserFacingException(string message) : Exception(message);
+
+/// <summary>The file is gone and was not recycled. Never expected; reported plainly if it happens.</summary>
+public sealed class FilePermanentlyDeletedException(string message) : UserFacingException(message);
 
 /// <summary>
 /// Every operation that touches photo files on disk. Rules:
 /// never overwrite an existing file, and never delete permanently: deletion only ever goes to
-/// the Recycle Bin through Microsoft.VisualBasic.FileIO.FileSystem.
+/// the Recycle Bin through <see cref="RecycleBin"/> (IFileOperation), which aborts rather than
+/// deleting anything it can't recycle.
 /// </summary>
 public static class FileOps
 {
@@ -134,6 +137,13 @@ public static class FileOps
                 reason = "This file is on a network location, which has no Recycle Bin.";
                 return false;
             }
+            // subst drives look like fixed drives, but Windows doesn't recycle from them.
+            var givenRoot = Path.GetPathRoot(Path.GetFullPath(path));
+            if (IsSubstDrive(givenRoot))
+            {
+                reason = "This file is on a substituted (subst) drive, which has no Recycle Bin.";
+                return false;
+            }
             var final = ResolveFinalPath(path);
             if (final == null)
             {
@@ -239,6 +249,18 @@ public static class FileOps
         return open >= 0 && close > open ? name[open..(close + 1)] : null;
     }
 
+    static bool IsSubstDrive(string? root)
+    {
+        if (root is not { Length: >= 2 } || root[1] != ':') return false;
+        var target = new StringBuilder(1024);
+        if (QueryDosDeviceW(root[..2], target, (uint)target.Capacity) == 0) return false;
+        // subst targets start with \??\ (e.g. \??\C:\folder); real volumes are \Device\HarddiskVolumeN.
+        return target.ToString().StartsWith(@"\??\", StringComparison.Ordinal);
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint QueryDosDeviceW(string deviceName, StringBuilder targetPath, uint max);
+
     const uint FileFlagBackupSemantics = 0x02000000;
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -252,9 +274,10 @@ public static class FileOps
 
     /// <summary>
     /// Sends one file to the Recycle Bin. This is the only delete path for photos in the app.
-    /// Windows' own dialogs are left on so that, if Windows ever decides a file can't be recycled,
-    /// it asks before doing anything permanent. Throws <see cref="OperationCanceledException"/> if
-    /// the user cancels a Windows prompt.
+    /// First the pre-checks above must pass; then <see cref="RecycleBin"/> asks Windows to recycle
+    /// the file silently and aborts if Windows says it can't. Either way, a file that isn't
+    /// recycled is left exactly where it was. Throws <see cref="UserFacingException"/> with the
+    /// reason when the file wasn't recycled. Must run on an STA thread.
     /// </summary>
     public static void SendToRecycleBin(string path)
     {
@@ -262,7 +285,21 @@ public static class FileOps
         if (!CanRecycle(path, out var reason))
             throw new UserFacingException(reason + " PhotoScope only deletes to the Recycle Bin, so the file was left alone.");
 
-        FileSystem.DeleteFile(path, UIOption.AllDialogs, RecycleOption.SendToRecycleBin, UICancelOption.ThrowException);
+        var result = RecycleBin.Recycle(path);
+        switch (result.Outcome)
+        {
+            case RecycleOutcome.Recycled:
+                return;
+            case RecycleOutcome.PermanentlyDeleted:
+                throw new FilePermanentlyDeletedException(result.Message!);
+            case RecycleOutcome.Refused:
+                throw new UserFacingException("Windows couldn't put this file in the Recycle Bin (for example the bin is full, " +
+                                              "or turned off for this drive), so PhotoScope left the file alone. It was not deleted.");
+            default:
+                // Only say "left alone" when the file is verifiably still there.
+                throw new UserFacingException((result.Message ?? "Windows couldn't move the file.") +
+                    (File.Exists(path) ? " The file was left alone." : " The file is no longer at its original location."));
+        }
     }
 
     public static void OpenFolder(string folder)

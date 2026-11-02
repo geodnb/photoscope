@@ -101,6 +101,7 @@ public static class Friendly
         return ex switch
         {
             UserFacingException u => u.Message,
+            NetworkTimeoutException => "The network location isn't responding. PhotoScope will try again later.",
             FileNotFoundException or DirectoryNotFoundException => "The file could not be found.",
             DriveNotFoundException => "The drive is not available.",
             UnauthorizedAccessException => "Access to the file was denied.",

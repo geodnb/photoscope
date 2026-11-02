@@ -78,7 +78,7 @@ public sealed partial class MainViewModel
         var items = photos.Select(p => (Photo: p, p.Path)).ToList();
         try
         {
-            var (done, failed, cancelled) = await RunOnStaThread(() =>
+            var (done, failed) = await RunOnStaThread(() =>
             {
                 var ok = new List<Photo>();
                 var errors = new List<string>();
@@ -95,17 +95,19 @@ public sealed partial class MainViewModel
                         if (File.Exists(path)) errors.Add($"{Path.GetFileName(path)}: Windows didn't move it.");
                         else ok.Add(photo);
                     }
-                    catch (OperationCanceledException)
+                    catch (FilePermanentlyDeletedException ex)
                     {
-                        return (ok, errors, true);
+                        // The file is gone: drop it from the library too, and say exactly what happened.
+                        ok.Add(photo);
+                        errors.Add($"{Path.GetFileName(path)}: {ex.Message}");
                     }
                     catch (Exception ex)
                     {
-                        Log.Warn($"Recycle failed for {path}", ex);
+                        Log.Warn($"Not recycled: {path}", ex);
                         errors.Add($"{Path.GetFileName(path)}: {(ex is UserFacingException ? ex.Message : Friendly.Describe(ex))}");
                     }
                 }
-                return (ok, errors, false);
+                return (ok, errors);
             });
 
             foreach (var p in done) Log.Info($"Sent to Recycle Bin: {p.Path}");
@@ -115,14 +117,14 @@ public sealed partial class MainViewModel
             CloseBanner("busy");
             if (failed.Count > 0)
             {
-                Dialogs.Info("Some files weren't deleted",
+                Dialogs.Info(failed.Count == 1 && done.Count == 0 ? "The file wasn't deleted" : "Some files weren't deleted",
                     string.Join("\n", failed.Take(15)) + (failed.Count > 15 ? $"\n…and {failed.Count - 15} more." : "") +
                     "\n\nThose files were left untouched.");
             }
             if (done.Count > 0)
             {
                 ShowBanner("delete", BannerKind.Success,
-                    (done.Count == 1 ? "Moved 1 file" : $"Moved {done.Count:N0} files") + " to the Recycle Bin." + (cancelled ? " Stopped when Windows' prompt was cancelled." : ""));
+                    (done.Count == 1 ? "Moved 1 file" : $"Moved {done.Count:N0} files") + " to the Recycle Bin.");
             }
             return done;
         }
@@ -218,10 +220,17 @@ public sealed partial class MainViewModel
     {
         if (photos.Count == 0 || !EnsureNotBusy()) return;
         var candidates = photos.Where(p => !p.IsMissing).Select(p => (Photo: p, p.Path)).ToList();
-        var present = (await Task.Run(() => candidates.Where(c => File.Exists(c.Path)).ToList())).Select(c => c.Photo).ToList();
+        var notAnswering = 0;
+        var present = (await Task.Run(() => candidates.Where(c =>
+        {
+            try { return NetworkPaths.Run(c.Path, () => File.Exists(c.Path), NetworkPaths.ProbeTimeout); }
+            catch (NetworkTimeoutException) { Interlocked.Increment(ref notAnswering); return false; }
+        }).ToList())).Select(c => c.Photo).ToList();
         if (present.Count == 0)
         {
-            Dialogs.Info("Nothing to do", "The selected files can't be found.");
+            Dialogs.Info("Nothing to do", notAnswering > 0
+                ? "The network location holding the selected files isn't responding. Try again when it's available."
+                : "The selected files can't be found.");
             return;
         }
 

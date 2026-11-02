@@ -77,24 +77,92 @@ public sealed class FileSafetyTests : IDisposable
         Assert.False(FileOps.CanRecycle(Path.Combine(_tmp.Path, "missing.jpg"), out _));
     }
 
-    /// <summary>Puts one tiny file in the real Recycle Bin, so it only runs when asked.</summary>
-    [Fact]
-    public void Recycle_sends_file_to_recycle_bin()
+    static void RunSta(Action action)
     {
-        if (Environment.GetEnvironmentVariable("PHOTOSCOPE_TEST_RECYCLE") != "1") return;
-        var f = Path.Combine(_tmp.Path, "photoscope-recycle-test.txt");
-        File.WriteAllText(f, "safe to empty");
-        if (FileOps.CanRecycle(f, out _))
+        Exception? error = null;
+        var t = new Thread(() => { try { action(); } catch (Exception ex) { error = ex; } });
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        t.Join();
+        if (error != null) throw new Exception("STA test failed", error);
+    }
+
+    /// <summary>
+    /// Forces the progress sink down its abort path (as if Windows said "can't recycle"): the
+    /// operation must be refused and the file left byte-for-byte untouched. Runs on every machine.
+    /// </summary>
+    [Fact]
+    public void Unrecyclable_file_is_never_deleted_simulated() => RunSta(() =>
+    {
+        var f = Path.Combine(_tmp.Path, "cannot-recycle.jpg");
+        File.WriteAllText(f, "original contents");
+        var result = RecycleBin.Recycle(f, simulateNotRecyclable: true);
+        Assert.Equal(RecycleOutcome.Refused, result.Outcome);
+        Assert.True(File.Exists(f));
+        Assert.Equal("original contents", File.ReadAllText(f));
+    });
+
+    /// <summary>
+    /// The real thing, with Windows deciding: ask IFileOperation directly (skipping PhotoScope's own
+    /// pre-checks) to recycle a file in a place Windows can't recycle from. Windows would delete it
+    /// permanently, so the progress sink must abort and the file must survive untouched.
+    /// Uses PHOTOSCOPE_TEST_NOBIN_DIR if set (e.g. a folder on a subst drive), otherwise the temp
+    /// folder when its drive's bin is set to "remove files immediately"; otherwise it's skipped.
+    /// </summary>
+    [SkippableFact]
+    public void Unrecyclable_file_is_never_deleted_by_windows()
+    {
+        var dir = Environment.GetEnvironmentVariable("PHOTOSCOPE_TEST_NOBIN_DIR");
+        if (string.IsNullOrEmpty(dir))
         {
-            FileOps.SendToRecycleBin(f);
-            Assert.False(File.Exists(f));
+            var probe = Path.Combine(_tmp.Path, "probe.txt");
+            File.WriteAllText(probe, "x");
+            var noBinHere = !FileOps.CanRecycle(probe, out var why) && why.Contains("remove files immediately");
+            Skip.IfNot(noBinHere, "Set PHOTOSCOPE_TEST_NOBIN_DIR to a folder Windows can't recycle from (e.g. on a subst drive).");
+            dir = _tmp.Path;
         }
-        else
+        RunSta(() => NeverDeletedIn(dir!));
+    }
+
+    void NeverDeletedIn(string dir)
+    {
+        var f = Path.Combine(dir, $"photoscope-no-bin-test-{Guid.NewGuid():N}.jpg");
+        File.WriteAllText(f, "original contents");
+        try
         {
-            // No usable bin here (e.g. "remove files immediately"): the file must be left alone.
-            Assert.Throws<UserFacingException>(() => FileOps.SendToRecycleBin(f));
+            var result = RecycleBin.Recycle(f);
+            Assert.Equal(RecycleOutcome.Refused, result.Outcome);
             Assert.True(File.Exists(f));
+            Assert.Equal("original contents", File.ReadAllText(f));
+
+            // Through the app's entry point: refused with a clear reason, file still untouched.
+            var ex = Assert.Throws<UserFacingException>(() => FileOps.SendToRecycleBin(f));
+            Assert.Contains("left alone", ex.Message);
+            Assert.True(File.Exists(f));
+            Assert.Equal("original contents", File.ReadAllText(f));
         }
+        finally
+        {
+            if (File.Exists(f)) File.Delete(f); // test's own scratch file
+        }
+    }
+
+    /// <summary>Opt-in: PHOTOSCOPE_TEST_RECYCLE_DIR=a folder on a drive with a working Recycle Bin.</summary>
+    [SkippableFact]
+    public void Recyclable_file_goes_to_the_recycle_bin()
+    {
+        var dir = Environment.GetEnvironmentVariable("PHOTOSCOPE_TEST_RECYCLE_DIR");
+        Skip.If(string.IsNullOrEmpty(dir), "Set PHOTOSCOPE_TEST_RECYCLE_DIR to a folder with a working Recycle Bin (puts a tiny file in the bin).");
+        RunSta(() => RecyclesIn(dir!));
+    }
+
+    static void RecyclesIn(string dir)
+    {
+        var f = Path.Combine(dir, $"photoscope-recycle-test-{Guid.NewGuid():N}.txt");
+        File.WriteAllText(f, "safe to empty from the Recycle Bin");
+        Assert.True(FileOps.CanRecycle(f, out var why), why);
+        Assert.Equal(RecycleOutcome.Recycled, RecycleBin.Recycle(f).Outcome);
+        Assert.False(File.Exists(f));
     }
 
     [Fact]

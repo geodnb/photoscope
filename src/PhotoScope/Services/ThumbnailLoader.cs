@@ -8,6 +8,9 @@ namespace PhotoScope.Services;
 /// Loads thumbnails on background threads with newest-first priority, so whatever is on screen
 /// right now loads first while scrolling. Keeps a bounded in-memory LRU so memory stays flat
 /// no matter how big the library is.
+/// Two queues: local workers serve the disk cache and local files; photos on network shares that
+/// still need a thumbnail are handed to separate network workers with timeouts, so a share that
+/// stops responding can never hold up thumbnails for local photos.
 /// </summary>
 public sealed class ThumbnailLoader
 {
@@ -29,11 +32,18 @@ public sealed class ThumbnailLoader
 
     public static ThumbnailLoader Instance { get; private set; } = null!;
 
+    const int NetworkWorkers = 2;
+
+    /// <summary>Test hook run inside network work (e.g. to simulate a share that hangs).</summary>
+    internal static Action<Photo>? TestNetworkHook { get; set; }
+
     readonly ThumbnailCache _disk;
     readonly Dispatcher _ui;
-    readonly LinkedList<Request> _queue = new();
+    readonly LinkedList<Request> _local = new();
+    readonly LinkedList<Request> _network = new();
     readonly object _gate = new();
-    readonly SemaphoreSlim _signal = new(0);
+    readonly SemaphoreSlim _localSignal = new(0);
+    readonly SemaphoreSlim _networkSignal = new(0);
     // Bounded by bytes, not count, so big thumbnails on high-DPI screens can't balloon memory.
     readonly LruCache<(long Id, int Size, long Ticks), BitmapSource> _memory =
         new(160L * 1024 * 1024, b => (long)b.PixelWidth * b.PixelHeight * 4);
@@ -49,15 +59,13 @@ public sealed class ThumbnailLoader
         _ui = ui;
         var workers = Math.Clamp(Environment.ProcessorCount / 2, 2, 4);
         for (var i = 0; i < workers; i++)
-        {
-            new Thread(Worker)
-            {
-                IsBackground = true,
-                Priority = ThreadPriority.BelowNormal,
-                Name = $"Thumbnail worker {i + 1}",
-            }.Start();
-        }
+            StartWorker(() => Worker(network: false), $"Thumbnail worker {i + 1}");
+        for (var i = 0; i < NetworkWorkers; i++)
+            StartWorker(() => Worker(network: true), $"Network thumbnail worker {i + 1}");
     }
+
+    static void StartWorker(ThreadStart body, string name) =>
+        new Thread(body) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = name }.Start();
 
     public ThumbnailCache Disk => _disk;
 
@@ -73,9 +81,18 @@ public sealed class ThumbnailLoader
             return null;
         }
         var r = new Request(photo, size, done);
-        lock (_gate) r.Node = _queue.AddLast(r);
-        _signal.Release();
+        Enqueue(r, network: false);
         return r;
+    }
+
+    void Enqueue(Request r, bool network)
+    {
+        lock (_gate)
+        {
+            if (r.Cancelled) return;
+            r.Node = (network ? _network : _local).AddLast(r);
+        }
+        (network ? _networkSignal : _localSignal).Release();
     }
 
     public void Cancel(Request? r)
@@ -84,7 +101,7 @@ public sealed class ThumbnailLoader
         r.Cancelled = true;
         lock (_gate)
         {
-            if (r.Node?.List != null) _queue.Remove(r.Node);
+            r.Node?.List?.Remove(r.Node);
             r.Node = null;
         }
     }
@@ -92,17 +109,19 @@ public sealed class ThumbnailLoader
     /// <summary>Drops in-memory thumbnails (e.g. after clearing the disk cache).</summary>
     public void ClearMemory() => _memory.Clear();
 
-    void Worker()
+    void Worker(bool network)
     {
+        var queue = network ? _network : _local;
+        var signal = network ? _networkSignal : _localSignal;
         while (true)
         {
-            _signal.Wait();
+            signal.Wait();
             Request? r;
             lock (_gate)
             {
-                r = _queue.Last?.Value;
+                r = queue.Last?.Value;
                 if (r == null) continue;
-                _queue.RemoveLast();
+                queue.RemoveLast();
                 r.Node = null;
             }
             if (r.Cancelled) continue;
@@ -112,7 +131,27 @@ public sealed class ThumbnailLoader
             var permanent = false;
             try
             {
-                bmp = Produce(r.Photo, r.Size);
+                if (network)
+                {
+                    bmp = ProduceFromNetwork(r.Photo, r.Size);
+                }
+                else
+                {
+                    bmp = _disk.TryLoad(r.Photo, r.Size);
+                    if (bmp == null && NeedsOriginal(r.Photo))
+                    {
+                        if (NetworkPaths.IsNetwork(r.Photo.Path))
+                        {
+                            Enqueue(r, network: true); // hand off; this worker stays free for local photos
+                            continue;
+                        }
+                        bmp = ProduceFromOriginal(r.Photo, r.Size);
+                    }
+                }
+            }
+            catch (NetworkTimeoutException)
+            {
+                // Share not answering: show nothing for now, try again on a later request.
             }
             catch (Exception ex)
             {
@@ -134,17 +173,25 @@ public sealed class ThumbnailLoader
         }
     }
 
-    BitmapSource? Produce(Photo p, int size)
+    /// <summary>Only try the original if it isn't known to be missing or undecodable.</summary>
+    static bool NeedsOriginal(Photo p) => !p.IsMissing && p.DecodeError == null;
+
+    BitmapSource? ProduceFromOriginal(Photo p, int size)
     {
-        var fromDisk = _disk.TryLoad(p, size);
-        if (fromDisk != null) return fromDisk;
-
-        // No cached thumbnail: only try the original if it is there and decodable.
-        if (p.IsMissing || p.DecodeError != null) return null;
         if (!File.Exists(p.Path)) return null;
-
         var generated = _disk.Generate(p);
         return ImageDecoder.ScaleDown(generated, size);
+    }
+
+    BitmapSource? ProduceFromNetwork(Photo p, int size)
+    {
+        if (NetworkPaths.IsBackedOff(p.Path)) return null;
+        // The whole read + decode runs with a timeout; a hung share costs at most this worker's wait.
+        return NetworkPaths.Run(p.Path, () =>
+        {
+            TestNetworkHook?.Invoke(p);
+            return ProduceFromOriginal(p, size);
+        }, NetworkPaths.ReadTimeout);
     }
 }
 

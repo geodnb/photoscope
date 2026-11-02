@@ -6,6 +6,7 @@ using PhotoScope.ViewModels;
 namespace PhotoScope.Tests;
 
 /// <summary>Exercises the main view model's library/playlist logic without any windows.</summary>
+[Collection("ThumbnailLoader")]
 public sealed class ViewModelTests : IDisposable
 {
     readonly TempDir _tmp = new();

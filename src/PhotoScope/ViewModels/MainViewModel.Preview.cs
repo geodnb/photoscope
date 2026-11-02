@@ -71,7 +71,8 @@ public sealed partial class MainViewModel
                 return;
             }
 
-            var bmp = await Task.Run(() => ImageDecoder.Decode(p.Path, PreviewMaxSide, p.PixelWidth, p.PixelHeight, p.Orientation));
+            var (path, w, h, o) = (p.Path, p.PixelWidth, p.PixelHeight, p.Orientation);
+            var bmp = await NetworkPaths.RunAsync(path, () => ImageDecoder.Decode(path, PreviewMaxSide, w, h, o), NetworkPaths.ReadTimeout);
             if (version == _previewVersion) PreviewImage = bmp;
         }
         catch (Exception ex)
@@ -81,7 +82,9 @@ public sealed partial class MainViewModel
             {
                 PreviewError = Friendly.DescribeImageError(ex, p.Path);
                 var path = p.Path;
-                if (!await Task.Run(() => File.Exists(path)) && version == _previewVersion)
+                // null = share not answering: keep the "not responding" message rather than "can't be found".
+                var exists = ex is NetworkTimeoutException ? null : await NetworkPaths.FileExistsAsync(path);
+                if (exists == false && version == _previewVersion)
                     PreviewError = "This file can't be found. It may have been moved, renamed or deleted.";
             }
         }

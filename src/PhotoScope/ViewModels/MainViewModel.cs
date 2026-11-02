@@ -501,7 +501,8 @@ public sealed partial class MainViewModel : ObservableObject
 
         var (missing, present, changed) = await Task.Run(() =>
         {
-            var dirExists = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            // One probe per folder (Lazy: concurrent callers share it). null = the share didn't answer.
+            var folderState = new ConcurrentDictionary<string, Lazy<bool?>>(StringComparer.OrdinalIgnoreCase);
             var missingBag = new ConcurrentBag<Photo>();
             var presentBag = new ConcurrentBag<Photo>();
             var changedBag = new ConcurrentBag<(Photo Photo, long Size, DateTime Modified, ImageInfo? Info, string? Hash)>();
@@ -510,7 +511,23 @@ public sealed partial class MainViewModel : ObservableObject
                 try
                 {
                     var dir = System.IO.Path.GetDirectoryName(item.Path) ?? "";
-                    var fi = dirExists.GetOrAdd(dir, Directory.Exists) ? new FileInfo(item.Path) : null;
+                    // Network folders are probed with a timeout. If a share doesn't answer, its photos'
+                    // status is left as it was: "not answering" is not the same as "missing".
+                    var folder = folderState.GetOrAdd(dir, d => new Lazy<bool?>(() =>
+                    {
+                        try { return NetworkPaths.Run(d, () => Directory.Exists(d), NetworkPaths.ProbeTimeout); }
+                        catch (NetworkTimeoutException) { return null; }
+                    })).Value;
+                    if (folder == null) return;
+                    FileInfo? fi = null;
+                    if (folder == true)
+                    {
+                        try
+                        {
+                            fi = NetworkPaths.Run(item.Path, () => { var f = new FileInfo(item.Path); _ = f.Exists; return f; }, NetworkPaths.ProbeTimeout);
+                        }
+                        catch (NetworkTimeoutException) { return; } // unknown: leave as it was
+                    }
                     if (fi is not { Exists: true })
                     {
                         missingBag.Add(item.Photo);
@@ -520,9 +537,19 @@ public sealed partial class MainViewModel : ObservableObject
                     if (fi.Length != item.SizeBytes || fi.LastWriteTimeUtc != item.ModifiedUtc)
                     {
                         ImageInfo? info = null;
-                        try { info = ImageDecoder.ReadInfo(item.Path); } catch { }
                         string? hash = null;
-                        try { hash = ImportService.HashFileForCompare(item.Path); } catch { }
+                        try
+                        {
+                            try { info = NetworkPaths.Run(item.Path, () => ImageDecoder.ReadInfo(item.Path), NetworkPaths.ReadTimeout); }
+                            catch (NetworkTimeoutException) { throw; }
+                            catch { /* undecodable: details stay as they were */ }
+                            hash = NetworkPaths.Run(item.Path, () => ImportService.HashFileForCompare(item.Path), TimeSpan.FromMinutes(2));
+                        }
+                        catch (Exception ex) when (ex is NetworkTimeoutException or IOException or UnauthorizedAccessException)
+                        {
+                            // Couldn't read it fully now: don't save half-updated details; the next scan retries.
+                            return;
+                        }
                         changedBag.Add((item.Photo, fi.Length, fi.LastWriteTimeUtc, info, hash));
                     }
                 }
