@@ -13,6 +13,7 @@
     <c:NotNullToVisibilityConverter x:Key="NotNullToVis"/>
     <c:ZeroToVisibilityConverter x:Key="ZeroToVis"/>
     <c:NonZeroToVisibilityConverter x:Key="NonZeroToVis"/>
+    <c:NonZeroToBoolConverter x:Key="NonZeroToBool"/>
     <c:InverseBoolConverter x:Key="InverseBool"/>
     <c:EnumEqualsConverter x:Key="EnumEquals"/>
     <c:StarsConverter x:Key="Stars"/>

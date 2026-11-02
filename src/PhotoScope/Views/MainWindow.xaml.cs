@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using PhotoScope.Controls;
 using PhotoScope.Models;
 using PhotoScope.Services;
 using PhotoScope.ViewModels;
@@ -11,8 +12,12 @@ namespace PhotoScope.Views;
 
 public partial class MainWindow
 {
+    const string PhotoFormat = "PhotoScope.Photos";
+    const string PlaylistFormat = "PhotoScope.PlaylistItems";
+
     readonly MainViewModel _vm;
     bool _restoringSelection;
+    InsertionMarker? _marker;
 
     public MainWindow(MainViewModel vm)
     {
@@ -33,6 +38,27 @@ public partial class MainWindow
         DragOver += OnWindowDragOver;
         Drop += OnWindowDrop;
         Gallery.PreviewMouseWheel += OnGalleryPreviewMouseWheel;
+
+        // Drag photos from the gallery into a playlist; drag within the playlist to reorder.
+        _ = new ListDragSource(Gallery, PhotoFormat);
+        _ = new ListDragSource(PlaylistStrip, PlaylistFormat);
+        PlaylistStrip.DragOver += OnStripDragOver;
+        PlaylistStrip.DragLeave += (_, _) => RemoveMarker();
+        PlaylistStrip.Drop += OnStripDrop;
+        PlaylistStrip.KeyDown += OnStripKeyDown;
+        PlaylistStrip.MouseDoubleClick += OnStripDoubleClick;
+        PlaylistList.DragOver += OnPlaylistListDragOver;
+        PlaylistList.Drop += OnPlaylistListDrop;
+        PlaylistList.PreviewMouseRightButtonDown += (_, e) =>
+        {
+            if (ListDragSource.ItemAt(PlaylistList, e.OriginalSource as DependencyObject) is { } item) item.IsSelected = true;
+        };
+        PlaylistList.SelectionChanged += (_, _) =>
+        {
+            if (PlaylistList.IsKeyboardFocusWithin || PlaylistList.IsMouseOver) _vm.IsPlaylistVisible = true;
+        };
+        Gallery.ContextMenuOpening += OnGalleryContextMenuOpening;
+        Gallery.ContextMenu = new ContextMenu();
 
         _vm.ViewReset += OnViewReset;
         _vm.PropertyChanged += OnVmPropertyChanged;
@@ -237,22 +263,145 @@ public partial class MainWindow
         e.Handled = true;
     }
 
+    // ------------------------------------------------------------------ playlists: drag and drop
+
+    List<Photo> PhotosFrom(IDataObject data, string format) =>
+        data.GetData(format) is long[] ids ? ids.Select(_vm.FindPhoto).OfType<Photo>().ToList() : [];
+
+    void OnStripDragOver(object sender, DragEventArgs e)
+    {
+        var internalMove = e.Data.GetDataPresent(PlaylistFormat);
+        var fromGallery = e.Data.GetDataPresent(PhotoFormat);
+        if (!internalMove && !fromGallery)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+        e.Effects = internalMove ? DragDropEffects.Move : DragDropEffects.Copy;
+        _marker ??= InsertionMarker.Attach(PlaylistStrip);
+        InsertionMarker.IndexAt(PlaylistStrip, e.GetPosition(PlaylistStrip), _marker);
+        AutoScrollStrip(e.GetPosition(PlaylistStrip));
+        e.Handled = true;
+    }
+
+    void AutoScrollStrip(Point p)
+    {
+        if (FindScrollViewer(PlaylistStrip) is not { } sv) return;
+        if (p.X < 40) sv.ScrollToHorizontalOffset(sv.HorizontalOffset - 20);
+        else if (p.X > PlaylistStrip.ActualWidth - 40) sv.ScrollToHorizontalOffset(sv.HorizontalOffset + 20);
+    }
+
+    static ScrollViewer? FindScrollViewer(DependencyObject d)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var child = VisualTreeHelper.GetChild(d, i);
+            if (child is ScrollViewer sv) return sv;
+            if (FindScrollViewer(child) is { } found) return found;
+        }
+        return null;
+    }
+
+    void RemoveMarker()
+    {
+        _marker?.Detach();
+        _marker = null;
+    }
+
+    void OnStripDrop(object sender, DragEventArgs e)
+    {
+        var index = InsertionMarker.IndexAt(PlaylistStrip, e.GetPosition(PlaylistStrip), null);
+        RemoveMarker();
+        e.Handled = true;
+        if (e.Data.GetDataPresent(PlaylistFormat))
+        {
+            _vm.MovePlaylistItems(PhotosFrom(e.Data, PlaylistFormat), index);
+            return;
+        }
+        var photos = PhotosFrom(e.Data, PhotoFormat);
+        if (photos.Count == 0) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            var pl = _vm.SelectedPlaylist ?? _vm.NewPlaylist();
+            if (pl != null) _vm.AddToPlaylist(pl, photos, _vm.SelectedPlaylist == pl ? index : -1);
+        });
+    }
+
+    void OnPlaylistListDragOver(object sender, DragEventArgs e)
+    {
+        var target = ListDragSource.ItemAt(PlaylistList, e.OriginalSource as DependencyObject);
+        e.Effects = e.Data.GetDataPresent(PhotoFormat) && target != null ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    void OnPlaylistListDrop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (ListDragSource.ItemAt(PlaylistList, e.OriginalSource as DependencyObject)?.DataContext is not Playlist pl) return;
+        var photos = PhotosFrom(e.Data, PhotoFormat);
+        if (photos.Count == 0) return;
+        var added = _vm.AddToPlaylist(pl, photos);
+        _vm.ShowBanner("playlist", BannerKind.Success,
+            (added == 1 ? "Added 1 photo" : $"Added {added:N0} photos") + $" to \u201C{pl.Name}\u201D."
+            + (photos.Count > added ? $" {photos.Count - added:N0} already in it." : ""));
+    }
+
+    void OnStripKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Delete && PlaylistStrip.SelectedItems.Count > 0)
+        {
+            _vm.RemoveFromPlaylistCommand.Execute(PlaylistStrip.SelectedItems.Cast<Photo>().ToList());
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && PlaylistStrip.SelectedItem is Photo p)
+        {
+            _vm.PlayPlaylistCommand.Execute(p);
+            e.Handled = true;
+        }
+    }
+
+    void OnStripDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ListDragSource.ItemAt(PlaylistStrip, e.OriginalSource as DependencyObject)?.DataContext is Photo p)
+        {
+            e.Handled = true;
+            _vm.PlayPlaylistCommand.Execute(p);
+        }
+    }
+
+    // ------------------------------------------------------------------ gallery context menu
+
+    void OnGalleryContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        // Right-clicking an unselected photo selects just that photo first.
+        if (ListDragSource.ItemAt(Gallery, e.OriginalSource as DependencyObject) is { } item && !item.IsSelected)
+        {
+            Gallery.SelectedItems.Clear();
+            item.IsSelected = true;
+        }
+        if (_vm.SelectedPhotos.Count == 0)
+        {
+            e.Handled = true;
+            return;
+        }
+        Gallery.ContextMenu = GalleryMenu.Build(_vm);
+    }
+
     // ------------------------------------------------------------------ drag and drop import
 
     static bool IsFileDrop(DragEventArgs e) => e.Data.GetDataPresent(DataFormats.FileDrop);
 
     void OnWindowDragOver(object sender, DragEventArgs e)
     {
-        if (IsFileDrop(e))
-        {
-            e.Effects = DragDropEffects.Copy;
-            e.Handled = true;
-        }
+        // Only files from outside can be dropped on the window itself (to import them).
+        e.Effects = IsFileDrop(e) && !e.Data.GetDataPresent(PhotoFormat) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
     }
 
     void OnWindowDrop(object sender, DragEventArgs e)
     {
-        if (e.Handled || !IsFileDrop(e)) return;
+        if (e.Handled || !IsFileDrop(e) || e.Data.GetDataPresent(PhotoFormat)) return;
         if (e.Data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length > 0)
         {
             e.Handled = true;
