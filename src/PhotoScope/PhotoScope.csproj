@@ -10,6 +10,7 @@
     <RootNamespace>PhotoScope</RootNamespace>
     <AssemblyName>PhotoScope</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\PhotoScope.ico</ApplicationIcon>
     <Version>0.1.0</Version>
     <Product>PhotoScope</Product>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
@@ -17,6 +18,11 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="PhotoScope.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\PhotoScope.ico" />
+    <Resource Include="Assets\PhotoScope.png" />
   </ItemGroup>
 
   <ItemGroup>

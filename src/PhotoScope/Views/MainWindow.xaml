@@ -57,10 +57,8 @@
         <DockPanel Grid.Column="0" Background="{DynamicResource Brush.Sidebar}">
             <StackPanel DockPanel.Dock="Top">
                 <StackPanel Orientation="Horizontal" Margin="18,16,12,16">
-                    <Border Width="28" Height="28" CornerRadius="7" Background="{DynamicResource Brush.Accent}">
-                        <TextBlock Text="&#xE91B;" Style="{StaticResource Text.Icon}" FontSize="15" Foreground="{DynamicResource Brush.OnAccent}"
-                                   HorizontalAlignment="Center"/>
-                    </Border>
+                    <Image Source="/PhotoScope;component/Assets/PhotoScope.png" Width="28" Height="28"
+                           RenderOptions.BitmapScalingMode="HighQuality"/>
                     <TextBlock Text="PhotoScope" FontFamily="{StaticResource Font.Display}" FontSize="17" FontWeight="SemiBold"
                                VerticalAlignment="Center" Margin="10,0,0,1"/>
                 </StackPanel>

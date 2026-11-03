@@ -22,6 +22,9 @@ dotnet publish src/PhotoScope -c Release -r win-x64 --self-contained false -o pu
 
 Run the tests with `dotnet test`.
 
+The app icon (`src/PhotoScope/Assets/PhotoScope.ico`, 16-256 px) is drawn by `tools/make-icon.ps1`; run
+`powershell -STA -File tools\make-icon.ps1` to regenerate it.
+
 ## Where things are stored
 
 Everything PhotoScope writes lives in `%LocalAppData%\PhotoScope`:

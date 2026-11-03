@@ -95,6 +95,7 @@ public partial class ViewerWindow
     ViewerWindow(MainViewModel vm, List<Photo> items, int startIndex, bool slideshow, bool fileMode)
     {
         InitializeComponent();
+        Icon = ThemedWindow.AppIcon;
         _vm = vm;
         _fileMode = fileMode;
         _items = items;
