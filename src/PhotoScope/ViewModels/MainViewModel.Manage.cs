@@ -235,7 +235,7 @@ public sealed partial class MainViewModel
         }
 
         var dlg = new OpenFolderDialog { Title = move ? "Move photos to…" : "Copy photos to…" };
-        if (dlg.ShowDialog(Application.Current.MainWindow) != true) return;
+        if (dlg.ShowDialog(Dialogs.Owner()) != true) return;
         var target = dlg.FolderName;
 
         var n = present.Count;
@@ -380,7 +380,7 @@ public sealed partial class MainViewModel
         var folder = p.Folder;
         while (!string.IsNullOrEmpty(folder) && !Directory.Exists(folder)) folder = Path.GetDirectoryName(folder);
         if (!string.IsNullOrEmpty(folder)) dlg.InitialDirectory = folder;
-        if (dlg.ShowDialog(Application.Current.MainWindow) != true) return;
+        if (dlg.ShowDialog(Dialogs.Owner()) != true) return;
 
         var path = dlg.FileName;
         if (!string.Equals(path, p.Path, StringComparison.OrdinalIgnoreCase) && Db.PathExists(path))
@@ -416,7 +416,7 @@ public sealed partial class MainViewModel
     async Task RelocateManyAsync(IReadOnlyList<Photo> photos)
     {
         var dlg = new OpenFolderDialog { Title = $"Choose a folder to search for {photos.Count:N0} missing photos" };
-        if (dlg.ShowDialog(Application.Current.MainWindow) != true) return;
+        if (dlg.ShowDialog(Dialogs.Owner()) != true) return;
         var root = dlg.FolderName;
 
         IsBusy = true;
@@ -525,7 +525,7 @@ public sealed partial class MainViewModel
     void OpenSettings()
     {
         var oldLimit = Settings.ThumbnailCacheLimitMB;
-        var dlg = new SettingsWindow(this) { Owner = Application.Current.MainWindow };
+        var dlg = new SettingsWindow(this) { Owner = Dialogs.Owner() };
         if (dlg.ShowDialog() != true) return;
         SettingsService.Save();
         ThemeService.Apply();

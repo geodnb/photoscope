@@ -20,6 +20,12 @@ public sealed class AppSettings
     public double PreviewWidth { get; set; } = 340;
     public double PlaylistHeight { get; set; } = 190;
     public bool PreviewVisible { get; set; } = true;
+
+    /// <summary>Main window position from GetWindowPlacement (physical pixels); preferred over the fields above.</summary>
+    public string? MainPlacement { get; set; }
+
+    /// <summary>Viewer window position (windowed; full screen is never the starting state).</summary>
+    public string? ViewerPlacement { get; set; }
     public bool PlaylistVisible { get; set; } = true;
 
     // Last view

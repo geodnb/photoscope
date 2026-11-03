@@ -142,6 +142,7 @@ public sealed partial class MainViewModel : ObservableObject
         finally
         {
             IsLoading = false;
+            _loaded.TrySetResult();
         }
 
         _ = CheckMissingFilesAsync();
@@ -389,7 +390,7 @@ public sealed partial class MainViewModel : ObservableObject
             Dialogs.Info("Still loading", "Your library is still loading. Try again in a moment.");
             return;
         }
-        var dlg = new ImportDialog(Settings, initialPaths) { Owner = Application.Current.MainWindow };
+        var dlg = new ImportDialog(Settings, initialPaths) { Owner = Dialogs.Owner() };
         if (dlg.ShowDialog() == true && dlg.Result is { } options)
             _ = RunImportAsync(options);
     }

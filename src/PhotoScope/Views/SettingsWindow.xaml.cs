@@ -41,6 +41,42 @@ public partial class SettingsWindow
                          $"Library and settings: {AppPaths.Root}\n" +
                          $"{_vm.LibraryCount:N0} photos in the library.";
         Loaded += async (_, _) => await MeasureCacheAsync();
+        UpdateRegistrationStatus();
+    }
+
+    void UpdateRegistrationStatus()
+    {
+        var exe = FileAssociations.CurrentExe();
+        var registered = FileAssociations.IsRegistered();
+        RegistrationStatus.Text = exe == null
+            ? "Available when PhotoScope is run from PhotoScope.exe."
+            : registered ? "PhotoScope is in the “Open with” list." : "Not added.";
+        RegisterButton.IsEnabled = exe != null;
+        RegisterButton.Content = registered ? "Update" : "Add to Open with";
+        UnregisterButton.IsEnabled = registered || FileAssociations.IsRegistered(exePath: "");
+    }
+
+    void OnRegister(object sender, RoutedEventArgs e)
+    {
+        if (FileAssociations.CurrentExe() is not { } exe) return;
+        try { FileAssociations.Register(exe); }
+        catch (Exception ex)
+        {
+            Log.Error("Open with registration failed", ex);
+            Dialogs.Error("Couldn't add PhotoScope", Friendly.Describe(ex));
+        }
+        UpdateRegistrationStatus();
+    }
+
+    void OnUnregister(object sender, RoutedEventArgs e)
+    {
+        try { FileAssociations.Unregister(); }
+        catch (Exception ex)
+        {
+            Log.Error("Open with removal failed", ex);
+            Dialogs.Error("Couldn't remove PhotoScope", Friendly.Describe(ex));
+        }
+        UpdateRegistrationStatus();
     }
 
     async Task MeasureCacheAsync()

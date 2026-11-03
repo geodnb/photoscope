@@ -94,6 +94,22 @@
                     </StackPanel>
                 </Border>
 
+                <!-- Windows integration -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="Open photos from File Explorer" Style="{StaticResource Text.Subtitle}" Margin="0,0,0,4"/>
+                        <TextBlock Style="{StaticResource Text.Caption}" TextWrapping="Wrap" Margin="0,4,0,10"
+                                   Text="Adds PhotoScope to Explorer's &#x201C;Open with&#x201D; list and to Settings &gt; Apps &gt; Default apps for its image types, for your Windows account only. No admin rights are needed and nothing system-wide changes. It doesn't make PhotoScope the default; you can choose that in Windows if you want."/>
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button x:Name="RegisterButton" Content="Add to Open with" Click="OnRegister"/>
+                                <Button x:Name="UnregisterButton" Content="Remove" Margin="8,0,0,0" Click="OnUnregister"/>
+                            </StackPanel>
+                            <TextBlock x:Name="RegistrationStatus" Style="{StaticResource Text.Caption}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,12,0"/>
+                        </DockPanel>
+                    </StackPanel>
+                </Border>
+
                 <!-- About -->
                 <Border Style="{StaticResource Card}">
                     <StackPanel>

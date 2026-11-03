@@ -58,8 +58,32 @@ placeholder with the reason instead of crashing.
 
 **Details pane**: large preview, dimensions, file size, date taken, camera model, path, favourite, rating and tags.
 
-**Full viewer**: fullscreen, zoom and pan, fit / 1:1, info overlay, slideshow with crossfade, shuffle, loop and
-an adjustable interval. Neighbouring photos are preloaded.
+**Viewer**: opens in a normal resizable window that remembers its size and position (and moves back on screen if a
+monitor has been unplugged). F11 or the toolbar button toggles full screen; slideshows start full screen. Zoom and
+pan, fit / 1:1, info overlay, slideshow with crossfade, shuffle, loop and an adjustable interval. Neighbouring
+photos are preloaded.
+
+**Opening photos from File Explorer**
+- `PhotoScope.exe "C:\path\photo.jpg"` (which is what Windows runs when PhotoScope is the default or chosen with
+  *Open with*) opens the photo straight in the viewer. The image appears first; the library loads behind it.
+- The arrow keys move through the other images in the same folder, sorted by name like Explorer.
+- Photos already in the library show their rating, favourite and tags. Others aren't imported: click
+  **Add to library** to add one (in place, nothing is copied). Rating and favourites need the photo in the library;
+  rotation works for the session.
+- Only one copy of PhotoScope runs. Opening another photo while it's running hands the file to the running copy
+  (over a named pipe that only your Windows account can use) instead of starting a second copy.
+- Missing files, folders and unsupported file types get a short message instead of an error.
+
+**Add to "Open with" (optional, per user)**: Settings > *Open photos from File Explorer* > **Add to Open with**.
+This writes only under `HKEY_CURRENT_USER` (no admin rights, nothing system-wide) and never changes your default app:
+- `Software\Classes\PhotoScope.Image` (file type and open command)
+- `Software\Classes\Applications\PhotoScope.exe` (app entry and its supported types)
+- a `PhotoScope.Image` value under `Software\Classes\<ext>\OpenWithProgids` for each supported extension
+- `Software\PhotoScope\Capabilities` and a `PhotoScope` value in `Software\RegisteredApplications`, so it appears in
+  Settings > Apps > Default apps
+
+**Remove** in the same place deletes exactly those keys and values. To make PhotoScope the default for a type, use
+*Open with > Choose another app* or Windows Settings.
 
 **Playlists**: create, rename and delete in the sidebar. Drag photos from the gallery into the playlist strip (or onto
 a playlist in the sidebar, or use right-click > Add to playlist), drag to reorder, remove, and Play as a slideshow.
@@ -113,9 +137,10 @@ shuffle and loop, thumbnail cache size with Clear cache.
 | F | Toggle favourite |
 | 0–5 | Set rating |
 | R / Shift+R | Rotate right / left (viewing rotation only) |
-| Space | Start, pause or resume the slideshow |
-| Delete | Delete (same choices as the gallery) |
-| Esc | Close |
+| Space | Start, pause or resume the slideshow (slideshows go full screen) |
+| F11 | Toggle full screen |
+| Delete | Delete (same choices as the gallery; files not in the library can only go to the Recycle Bin) |
+| Esc | Leave full screen; closes the viewer when it's already windowed |
 
 **Playlist strip**: Delete removes the selected photos from the playlist, Enter or double-click plays from there.
 

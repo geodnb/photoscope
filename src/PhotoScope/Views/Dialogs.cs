@@ -111,7 +111,8 @@ public sealed class MessageDialog : ThemedWindow
 /// <summary>Convenience wrappers so view models can ask simple questions.</summary>
 public static class Dialogs
 {
-    static Window? Owner()
+    /// <summary>A visible window to own a dialog: the active one, else the visible main window, else none.</summary>
+    public static Window? Owner()
     {
         var app = Application.Current;
         if (app == null) return null;

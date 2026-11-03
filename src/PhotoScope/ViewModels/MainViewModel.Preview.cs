@@ -12,6 +12,7 @@ namespace PhotoScope.ViewModels;
 public sealed partial class MainViewModel
 {
     const int PreviewMaxSide = 1600;
+    ViewerWindow? _libraryViewer;
     int _previewVersion;
 
     [ObservableProperty] private ImageSource? _previewImage;
@@ -128,9 +129,16 @@ public sealed partial class MainViewModel
         var index = 0;
         for (var i = 0; i < list.Count; i++)
             if (ReferenceEquals(list[i], start)) { index = i; break; }
-        var viewer = new ViewerWindow(this, list, index, slideshow) { Owner = Application.Current.MainWindow };
-        viewer.ShowDialog();
-        if (viewer.LastShown is { } last && _byId.ContainsKey(last.Id) && Photos.Contains(last))
-            RevealRequested?.Invoke(last);
+        // One library viewer at a time; it isn't modal, so a viewer opened from Explorer stays usable.
+        _libraryViewer?.Close();
+        var viewer = new ViewerWindow(this, list, index, slideshow) { Owner = Dialogs.Owner() };
+        viewer.Closed += (_, _) =>
+        {
+            if (_libraryViewer == viewer) _libraryViewer = null;
+            if (viewer.LastShown is { } last && _byId.ContainsKey(last.Id) && Photos.Contains(last))
+                RevealRequested?.Invoke(last);
+        };
+        _libraryViewer = viewer;
+        viewer.Show();
     }
 }

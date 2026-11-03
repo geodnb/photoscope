@@ -25,6 +25,8 @@ public partial class MainWindow
         _vm = vm;
         DataContext = vm;
         RestoreLayout();
+        // Physical-pixel placement (right across mixed-DPI monitors); ignored if that spot is off-screen now.
+        SourceInitialized += (_, _) => { if (!App.Offscreen) Controls.WindowPlacement.Apply(this, _vm.Settings.MainPlacement); };
         App.AddSnapshotHook(this, RootGrid);
 
         Loaded += (_, _) =>
@@ -65,23 +67,36 @@ public partial class MainWindow
         };
         TagsBox.GotKeyboardFocus += (_, _) => _tagsFor = _vm.SelectedPhoto;
         TagsBox.LostKeyboardFocus += (_, _) => { if (_tagsFor != null) CommitTags(); };
-        _vm.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName != nameof(MainViewModel.SelectedPhoto)) return;
-            if (_tagsFor != null && _tagsFor != _vm.SelectedPhoto) CommitTags();
-            TagsBox.Text = _vm.SelectedPhoto?.Tags ?? "";
-            if (TagsBox.IsKeyboardFocusWithin) _tagsFor = _vm.SelectedPhoto;
-        };
+        _vm.PropertyChanged += OnSelectedPhotoChangedForTags;
         Gallery.ContextMenu = new ContextMenu();
 
         _vm.ViewReset += OnViewReset;
         _vm.PropertyChanged += OnVmPropertyChanged;
-        _vm.RevealRequested += photo =>
+        _vm.RevealRequested += OnRevealRequested;
+        // The window can be closed and re-created while a file viewer keeps the app running:
+        // drop the view model subscriptions so the old window doesn't linger or react twice.
+        Closed += (_, _) =>
         {
-            Gallery.SelectedItem = photo;
-            Gallery.ScrollIntoView(photo);
-            Gallery.Focus();
+            _vm.ViewReset -= OnViewReset;
+            _vm.PropertyChanged -= OnVmPropertyChanged;
+            _vm.PropertyChanged -= OnSelectedPhotoChangedForTags;
+            _vm.RevealRequested -= OnRevealRequested;
         };
+    }
+
+    void OnRevealRequested(Photo photo)
+    {
+        Gallery.SelectedItem = photo;
+        Gallery.ScrollIntoView(photo);
+        Gallery.Focus();
+    }
+
+    void OnSelectedPhotoChangedForTags(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(MainViewModel.SelectedPhoto)) return;
+        if (_tagsFor != null && _tagsFor != _vm.SelectedPhoto) CommitTags();
+        TagsBox.Text = _vm.SelectedPhoto?.Tags ?? "";
+        if (TagsBox.IsKeyboardFocusWithin) _tagsFor = _vm.SelectedPhoto;
     }
 
     // ------------------------------------------------------------------ layout persistence
@@ -154,6 +169,7 @@ public partial class MainWindow
             s.WindowHeight = bounds.Height;
         }
         s.WindowMaximized = WindowState == WindowState.Maximized;
+        if (Controls.WindowPlacement.Capture(this) is { } placement) s.MainPlacement = placement;
         if (SidebarColumn.ActualWidth > 0) s.SidebarWidth = SidebarColumn.ActualWidth;
         if (PreviewPane.Visibility == Visibility.Visible && PreviewColumn.ActualWidth > 0) s.PreviewWidth = PreviewColumn.ActualWidth;
         if (PlaylistPane.Visibility == Visibility.Visible && PlaylistRow.ActualHeight > 0) s.PlaylistHeight = PlaylistRow.ActualHeight;

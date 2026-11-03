@@ -59,7 +59,7 @@ public static class ThemeService
 
         IsDark = dark;
         foreach (Window w in app.Windows)
-            ApplyTitleBar(w);
+            ApplyTitleBar(w, w is Views.ViewerWindow ? true : null);
         Changed?.Invoke();
     }
 
@@ -77,13 +77,14 @@ public static class ThemeService
     }
 
     /// <summary>Makes the window's title bar match the theme (Windows 10 2004+ / Windows 11).</summary>
-    public static void ApplyTitleBar(Window window)
+    /// <param name="forceDark">True for windows that are always dark (the viewer), whatever the theme.</param>
+    public static void ApplyTitleBar(Window window, bool? forceDark = null)
     {
         var handle = new WindowInteropHelper(window).Handle;
         if (handle == IntPtr.Zero) return;
         try
         {
-            var value = IsDark ? 1 : 0;
+            var value = (forceDark ?? IsDark) ? 1 : 0;
             DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref value, sizeof(int));
         }
         catch

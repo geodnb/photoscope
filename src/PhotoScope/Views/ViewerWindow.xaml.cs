@@ -6,6 +6,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using PhotoScope.Controls;
 using PhotoScope.Models;
 using PhotoScope.Services;
 using PhotoScope.ViewModels;
@@ -13,17 +14,26 @@ using PhotoScope.ViewModels;
 namespace PhotoScope.Views;
 
 /// <summary>
-/// Full-screen viewer and slideshow. Zoom/pan maths lives here because it is purely visual;
-/// library changes (favourite, rating, rotation, delete) go through the main view model.
+/// Photo viewer and slideshow, in a normal resizable window with an optional full-screen mode.
+/// Two ways in:
+/// <list type="bullet">
+/// <item>library mode: a list of library photos (from the gallery or a playlist);</item>
+/// <item>file mode: a file opened from Windows. It is shown at once; the other images in its folder
+/// are listed in the background, and photos already in the library pick up their rating, favourite
+/// and tags once the library has loaded. Files that aren't in the library can be added with a button.</item>
+/// </list>
+/// Zoom/pan maths lives here because it is purely visual; library changes go through the view model.
 /// </summary>
 public partial class ViewerWindow
 {
     const double MaxZoom = 16;
     static readonly double[] Intervals = [2, 3, 5, 8, 10, 15, 20, 30, 60];
+    static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
 
     readonly MainViewModel _vm;
-    readonly List<Photo> _items;
-    readonly Dictionary<long, Task<Decoded>> _cache = new();
+    List<Photo> _items;
+    readonly bool _fileMode;
+    readonly Dictionary<string, Task<Decoded>> _cache = new(PathComparer);
     readonly SemaphoreSlim _decodeGate = new(2);
     readonly DispatcherTimer _slideTimer = new();
     readonly DispatcherTimer _idleTimer = new() { Interval = TimeSpan.FromSeconds(2.5) };
@@ -32,12 +42,18 @@ public partial class ViewerWindow
 
     int _index;
     int _showVersion;
+    int _listingVersion;
     Photo? _shown;
     bool _hasImage;
     List<int> _order = new();
     int _orderPos;
     bool _slideshow;
     bool _playing;
+
+    // Full screen: the window state to go back to.
+    bool _fullScreen;
+    WindowState _restoreState;
+    bool _slideshowStartedOnce;
 
     // Zoom state. Content is measured in DIPs such that scale 1 == one image pixel per screen pixel.
     double _contentW, _contentH, _scale = 1, _tx, _ty;
@@ -48,26 +64,43 @@ public partial class ViewerWindow
     int _wheelAccumulator;
 
     /// <param name="Reduced">True when decoded at screen size rather than full resolution.</param>
-    sealed record Decoded(BitmapSource? Bitmap, string? Error, bool Missing, bool Reduced = false, bool Skipped = false);
+    /// <param name="Info">Header details, read when the photo's size wasn't known (files opened from Windows).</param>
+    sealed record Decoded(BitmapSource? Bitmap, string? Error, bool Missing, bool Reduced = false, bool Skipped = false,
+        ImageInfo? Info = null, long Size = 0, DateTime ModifiedUtc = default);
 
-    // Photo ids still worth decoding (current + neighbours). Read by decode tasks, so guarded by a lock.
-    readonly HashSet<long> _wanted = new();
+    // Paths still worth decoding (current + neighbours). Read by decode tasks, so guarded by a lock.
+    readonly HashSet<string> _wanted = new(PathComparer);
     Task<Decoded>? _fullTask;
-    long _fullFor = -1;
+    string? _fullFor;
     bool _shownReduced;
 
-    /// <summary>Longest side, in physical pixels, worth decoding for "fit" display on this screen.</summary>
-    int ScreenLongSide => (int)Math.Clamp(Math.Max(Math.Max(ActualWidth, ActualHeight), 1280) * _dpi, 1280, ImageDecoder.MaxViewerSide);
+    /// <summary>
+    /// Longest side, in physical pixels, worth decoding for "fit" display: the largest connected
+    /// monitor, so images stay sharp when the window is full screen on a big secondary display.
+    /// </summary>
+    readonly int ScreenLongSide = Math.Clamp(WindowPlacement.LargestMonitorLongSide(), 1280, ImageDecoder.MaxViewerSide);
 
     public Photo? LastShown => _shown;
 
+    /// <summary>Library mode: browse <paramref name="items"/> (gallery view or playlist).</summary>
     public ViewerWindow(MainViewModel vm, IReadOnlyList<Photo> items, int startIndex, bool slideshow)
+        : this(vm, items.ToList(), startIndex, slideshow, fileMode: false)
+    {
+    }
+
+    /// <summary>File mode: show a file opened from Windows, then let the arrow keys browse its folder.</summary>
+    public static ViewerWindow ForFile(MainViewModel vm, string path) =>
+        new(vm, [LoosePhoto(path)], 0, slideshow: false, fileMode: true);
+
+    ViewerWindow(MainViewModel vm, List<Photo> items, int startIndex, bool slideshow, bool fileMode)
     {
         InitializeComponent();
-        if (App.Offscreen) { App.SendToBack(this); WindowStartupLocation = WindowStartupLocation.Manual; Left = 0; Top = 0; App.AddSnapshotHook(this, Root); }
         _vm = vm;
-        _items = items.ToList();
-        _index = Math.Clamp(startIndex, 0, _items.Count - 1);
+        _fileMode = fileMode;
+        _items = items;
+        _index = Math.Clamp(startIndex, 0, Math.Max(0, _items.Count - 1));
+        RestorePlacement();
+        if (App.Offscreen) { App.SendToBack(this); App.AddSnapshotHook(this, Root); }
 
         for (var i = 0; i < 5; i++)
         {
@@ -105,8 +138,10 @@ public partial class ViewerWindow
         BuildOrder(keepCurrent: true);
         _slideshow = slideshow;
 
+        SourceInitialized += (_, _) => ThemeService.ApplyTitleBar(this, forceDark: true);
         Loaded += OnLoaded;
         Closing += OnClosing;
+        Deactivated += (_, _) => ShowCursor();
         KeyDown += OnKeyDown;
         MouseMove += (_, _) => ShowChrome();
         Viewport.SizeChanged += (_, _) => { if (_fit) FitToScreen(); else ApplyTransform(); };
@@ -119,21 +154,120 @@ public partial class ViewerWindow
         DpiChanged += (_, e) => { _dpi = e.NewDpi.DpiScaleX; if (_shown != null) SetContentSize(_shown, MainImage.Source as BitmapSource); };
     }
 
-    void OnLoaded(object sender, RoutedEventArgs e)
+    /// <summary>A photo for a file that isn't (yet known to be) in the library.</summary>
+    static Photo LoosePhoto(string path) => new() { Id = 0, Path = path };
+
+    static bool InLibrary(Photo p) => p.Id > 0;
+
+    static string CacheKey(Photo p) => p.Path;
+
+    // ------------------------------------------------------------------ window placement
+
+    void RestorePlacement()
     {
+        // Default: a comfortable size, centred over the library window (or on the primary monitor).
+        var work = SystemParameters.WorkArea;
+        Width = Math.Min(1280, work.Width);
+        Height = Math.Min(820, work.Height);
         if (App.Offscreen)
         {
-            // Automated UI checks: stay behind other windows and never maximise over the desktop.
-            WindowState = WindowState.Normal;
-            Width = 1600; Height = 900;
+            Left = 0;
+            Top = 0;
+            return;
         }
-        Log.Info($"Viewer opened: {_items.Count} photos, start {_index}, slideshow {_slideshow}");
-        if (!App.Offscreen) WindowState = WindowState.Maximized;
+        var owner = Dialogs.Owner();
+        if (owner != null && owner != this && owner.WindowState == WindowState.Normal)
+        {
+            Left = owner.Left + Math.Max(0, (owner.ActualWidth - Width) / 2);
+            Top = owner.Top + Math.Max(0, (owner.ActualHeight - Height) / 2);
+        }
+        else
+        {
+            Left = work.Left + (work.Width - Width) / 2;
+            Top = work.Top + (work.Height - Height) / 2;
+        }
+        // The saved spot wins if it's still on a connected monitor (checked in physical pixels).
+        SourceInitialized += (_, _) =>
+        {
+            WindowPlacement.Apply(this, _vm.Settings.ViewerPlacement);
+            if (_slideshow) EnterFullScreen(); // before the first paint: no windowed flash
+        };
+    }
+
+    void SavePlacement()
+    {
+        if (App.Offscreen) return;
+        var placement = WindowPlacement.Capture(this, _fullScreen ? _restoreState == WindowState.Maximized : null);
+        if (placement != null) _vm.Settings.ViewerPlacement = placement;
+    }
+
+    // ------------------------------------------------------------------ full screen
+
+    void ToggleFullScreen()
+    {
+        if (_fullScreen) ExitFullScreen();
+        else EnterFullScreen();
+    }
+
+    void EnterFullScreen()
+    {
+        if (_fullScreen || App.Offscreen) return;
+        _restoreState = WindowState == WindowState.Minimized ? WindowState.Normal : WindowState;
+        _fullScreen = true;
+        // Style changes only take effect on a restored window; then maximise without a frame,
+        // which covers the taskbar on the window's current monitor.
+        if (WindowState == WindowState.Maximized) WindowState = WindowState.Normal;
+        WindowStyle = WindowStyle.None;
+        ResizeMode = ResizeMode.NoResize;
+        WindowState = WindowState.Maximized;
+        FullScreenButton.Content = "\uE73F";
+        FullScreenButton.ToolTip = "Exit full screen (F11 or Esc)";
+        AutomationPropertiesHelper.SetName(FullScreenButton, "Exit full screen");
+    }
+
+    void ExitFullScreen()
+    {
+        if (!_fullScreen) return;
+        _fullScreen = false;
+        // Windows keeps the window's normal bounds while it is maximised, so restoring the state
+        // brings back the previous size and position.
+        WindowState = WindowState.Normal;
+        WindowStyle = WindowStyle.SingleBorderWindow;
+        ResizeMode = ResizeMode.CanResize;
+        if (!WindowPlacement.NormalBoundsVisible(this))
+        {
+            // Its old monitor was unplugged while in full screen: centre on the primary monitor.
+            var work = SystemParameters.WorkArea;
+            Width = Math.Min(Width, work.Width);
+            Height = Math.Min(Height, work.Height);
+            Left = work.Left + (work.Width - Width) / 2;
+            Top = work.Top + (work.Height - Height) / 2;
+        }
+        if (_restoreState == WindowState.Maximized) WindowState = WindowState.Maximized;
+        FullScreenButton.Content = "\uE740";
+        FullScreenButton.ToolTip = "Full screen (F11)";
+        AutomationPropertiesHelper.SetName(FullScreenButton, "Full screen");
+        ShowCursor();
+        ShowChrome();
+    }
+
+    static class AutomationPropertiesHelper
+    {
+        public static void SetName(DependencyObject d, string name) => System.Windows.Automation.AutomationProperties.SetName(d, name);
+    }
+
+    // ------------------------------------------------------------------ lifecycle
+
+    void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        Log.Info($"Viewer opened: {_items.Count} photos, start {_index}, slideshow {_slideshow}, file mode {_fileMode}");
         _dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        Activate();
         Focus();
         Show(_index, crossfade: false);
         if (_slideshow) StartSlideshow();
         ShowChrome();
+        if (_fileMode) _ = LoadFolderAndLibraryAsync();
     }
 
     void OnClosing(object? sender, CancelEventArgs e)
@@ -142,26 +276,115 @@ public partial class ViewerWindow
         _slideTimer.Stop();
         _idleTimer.Stop();
         _loadingTimer.Stop();
-        Mouse.OverrideCursor = null;
+        ShowCursor();
+        SavePlacement();
         SettingsService.Save();
+    }
+
+    /// <summary>File mode: shows another file in this window (e.g. a second "Open" from Explorer).</summary>
+    public void OpenFile(string path)
+    {
+        if (!_fileMode) return;
+        var photo = _vm.LibraryLoaded.IsCompleted ? _vm.FindByPath(path) ?? LoosePhoto(path) : LoosePhoto(path);
+        _items = [photo];
+        _index = 0;
+        ++_listingVersion;
+        // Forget earlier decodes: the file may have been edited since it was last shown.
+        _cache.Clear();
+        _fullTask = null;
+        _fullFor = null;
+        if (!IsLoaded)
+        {
+            // Not shown yet (several files opened at once): OnLoaded shows the latest one.
+            BuildOrder(keepCurrent: true);
+            return;
+        }
+        if (WindowState == WindowState.Minimized) SystemCommands.RestoreWindow(this); // back to normal or maximised
+        Activate();
+        if (_playing) Pause();
+        _slideshow = false;
+        SlideBar.Visibility = Visibility.Collapsed;
+        BuildOrder(keepCurrent: true);
+        _shown = null;
+        _hasImage = false;
+        Show(0, crossfade: false);
+        _ = LoadFolderAndLibraryAsync();
+    }
+
+    /// <summary>
+    /// File mode, in the background after the first image is up: list the folder (sorted like
+    /// Explorer) and attach library details to any photos that are in the library.
+    /// </summary>
+    async Task LoadFolderAndLibraryAsync()
+    {
+        var version = ++_listingVersion;
+        var current = _items[_index].Path;
+        var folder = Path.GetDirectoryName(current);
+        List<string>? paths = null;
+        if (folder != null)
+        {
+            try
+            {
+                paths = await NetworkPaths.RunAsync(folder, () => FolderListing.ListImages(folder, current), NetworkPaths.ReadTimeout);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Couldn't list {folder}", ex);
+            }
+        }
+        if (version != _listingVersion || !IsLoaded) return;
+        if (paths != null && _items.Count > 0) ApplyListing(paths);
+
+        try { await _vm.LibraryLoaded; } catch { }
+        if (version != _listingVersion || !IsLoaded) return;
+        AttachLibrary();
+    }
+
+    void ApplyListing(List<string> paths)
+    {
+        var currentPath = _items[_index].Path;
+        var existing = _items.ToDictionary(CacheKey, PathComparer);
+        _items = paths.Select(p => existing.GetValueOrDefault(p) ?? LoosePhoto(p)).ToList();
+        _index = Math.Max(0, _items.FindIndex(p => PathComparer.Equals(p.Path, currentPath)));
+        BuildOrder(keepCurrent: true);
+        UpdateChrome(_items[_index]);
+        Preload();
+    }
+
+    /// <summary>Swaps in library photos (with rating, favourite, tags) for files that are in the library.</summary>
+    void AttachLibrary()
+    {
+        var byPath = new Dictionary<string, Photo>(PathComparer);
+        foreach (var p in _vm.AllPhotos) byPath[p.Path] = p;
+        for (var i = 0; i < _items.Count; i++)
+        {
+            if (InLibrary(_items[i]) || !byPath.TryGetValue(_items[i].Path, out var lib)) continue;
+            if (ReferenceEquals(_shown, _items[i])) _shown = lib;
+            _items[i] = lib;
+        }
+        if (_shown != null)
+        {
+            UpdateChrome(_shown);
+            SetContentSize(_shown, MainImage.Source as BitmapSource);
+            if (_fit) FitToScreen(); else ApplyTransform();
+        }
     }
 
     // ------------------------------------------------------------------ loading
 
     Task<Decoded> GetDecoded(Photo p)
     {
-        if (_cache.TryGetValue(p.Id, out var existing)) return existing;
-        lock (_wanted) _wanted.Add(p.Id);
+        if (_cache.TryGetValue(CacheKey(p), out var existing)) return existing;
+        lock (_wanted) _wanted.Add(CacheKey(p));
         var task = DecodeAsync(p, ScreenLongSide, checkWanted: true);
-        _cache[p.Id] = task;
+        _cache[CacheKey(p)] = task;
         return task;
     }
 
     Task<Decoded> DecodeAsync(Photo p, int maxSide, bool checkWanted)
     {
         var (path, w, h, orientation) = (p.Path, p.PixelWidth, p.PixelHeight, p.Orientation);
-        var id = p.Id;
-        var originalLong = Math.Max(w, h);
+        var key = CacheKey(p);
         // Network files don't take a local decode slot (their own thread + timeout instead), so a
         // dead share can never delay decoding a local photo.
         var network = NetworkPaths.IsNetwork(path);
@@ -173,16 +396,28 @@ public partial class ViewerWindow
                 // The user may have moved on while this waited in the queue: don't decode for nothing.
                 if (checkWanted)
                     lock (_wanted)
-                        if (!_wanted.Contains(id)) return new Decoded(null, null, false, Skipped: true);
-                var bmp = await NetworkPaths.RunAsync(path, () => File.Exists(path) ? ImageDecoder.Decode(path, maxSide, w, h, orientation) : null,
-                    NetworkPaths.ReadTimeout);
-                if (bmp == null) return new Decoded(null, "This file can't be found. It may have been moved, renamed or deleted.", true);
-                var reduced = originalLong > 0 && Math.Max(bmp.PixelWidth, bmp.PixelHeight) < Math.Min(originalLong, ImageDecoder.MaxViewerSide);
-                return new Decoded(bmp, null, false, reduced);
+                        if (!_wanted.Contains(key)) return new Decoded(null, null, false, Skipped: true);
+                return await NetworkPaths.RunAsync(path, () =>
+                {
+                    var fi = new FileInfo(path);
+                    if (!fi.Exists) return new Decoded(null, "This file can't be found. It may have been moved, renamed or deleted.", true);
+                    // Files opened from Windows have no stored size yet: read the header first so
+                    // 1:1 zoom and the info overlay are right.
+                    ImageInfo? info = null;
+                    if (w <= 0 || h <= 0)
+                    {
+                        info = ImageDecoder.ReadInfo(path);
+                        (w, h, orientation) = (info.PixelWidth, info.PixelHeight, info.Orientation);
+                    }
+                    var bmp = ImageDecoder.Decode(path, maxSide, w, h, orientation);
+                    var originalLong = Math.Max(w, h);
+                    var reduced = originalLong > 0 && Math.Max(bmp.PixelWidth, bmp.PixelHeight) < Math.Min(originalLong, ImageDecoder.MaxViewerSide);
+                    return new Decoded(bmp, null, false, reduced, Info: info, Size: fi.Length, ModifiedUtc: fi.LastWriteTimeUtc);
+                }, NetworkPaths.ReadTimeout);
             }
             catch (Exception ex)
             {
-                Log.Warn($"Viewer could not decode {p.Path}", ex);
+                Log.Warn($"Viewer could not decode {path}", ex);
                 return new Decoded(null, Friendly.DescribeImageError(ex, path), false);
             }
             finally
@@ -206,24 +441,24 @@ public partial class ViewerWindow
     /// <summary>Forgets every decode except the current photo and its immediate neighbours.</summary>
     void PruneCache()
     {
-        var keep = new HashSet<long>();
+        var keep = new HashSet<string>(PathComparer);
         foreach (var offset in new[] { 0, 1, -1 })
         {
             var i = NeighbourIndex(offset);
-            if (i >= 0) keep.Add(_items[i].Id);
+            if (i >= 0) keep.Add(CacheKey(_items[i]));
         }
-        if (_items.Count > 0) keep.Add(_items[_index].Id);
+        if (_items.Count > 0) keep.Add(CacheKey(_items[_index]));
         lock (_wanted)
         {
             _wanted.Clear();
             _wanted.UnionWith(keep);
         }
-        foreach (var id in _cache.Keys.Where(id => !keep.Contains(id)).ToList())
-            _cache.Remove(id);
-        if (_fullFor >= 0 && !keep.Contains(_fullFor))
+        foreach (var k in _cache.Keys.Where(k => !keep.Contains(k)).ToList())
+            _cache.Remove(k);
+        if (_fullFor != null && !keep.Contains(_fullFor))
         {
             _fullTask = null;
-            _fullFor = -1;
+            _fullFor = null;
         }
     }
 
@@ -231,16 +466,16 @@ public partial class ViewerWindow
     async void EnsureFullResolution()
     {
         if (!_shownReduced || _shown is not { } p || _fit) return;
-        if (_fullFor != p.Id || _fullTask == null)
+        if (!PathComparer.Equals(_fullFor, CacheKey(p)) || _fullTask == null)
         {
-            _fullFor = p.Id;
+            _fullFor = CacheKey(p);
             _fullTask = DecodeAsync(p, 0, checkWanted: false);
         }
         var task = _fullTask;
         Decoded result;
         try { result = await task; }
         catch { return; }
-        if (!IsLoaded || !ReferenceEquals(_shown, p) || result.Bitmap == null || _fullTask != task) return;
+        if (!IsLoaded || !PathComparer.Equals(_shown?.Path, p.Path) || result.Bitmap == null || _fullTask != task) return;
         MainImage.Source = result.Bitmap; // same on-screen size, more pixels
         _shownReduced = false;
     }
@@ -279,7 +514,7 @@ public partial class ViewerWindow
         if (!task.IsCompleted)
         {
             // Show the cached thumbnail at once so navigation feels instant.
-            var thumb = _vm.Thumbs.TryLoad(p, ThumbnailCache.MaxSide);
+            var thumb = InLibrary(p) ? _vm.Thumbs.TryLoad(p, ThumbnailCache.MaxSide) : null;
             if (thumb != null && !crossfade) Display(p, thumb, null, false, isPlaceholder: true);
             _loadingTimer.Start();
         }
@@ -296,13 +531,33 @@ public partial class ViewerWindow
         if (version != _showVersion || !IsLoaded) return;
         _loadingTimer.Stop();
         Loading.Visibility = Visibility.Collapsed;
+        // The item may have been swapped for its library entry while decoding.
+        p = _items[_index];
 
         if (result.Skipped)
         {
             // Shouldn't happen for the current photo, but if it does, decode it now.
-            _cache.Remove(p.Id);
+            _cache.Remove(CacheKey(p));
             Show(_index, crossfade);
             return;
+        }
+        if (!InLibrary(p))
+        {
+            // Fill in details for files opened from Windows (not saved anywhere).
+            if (result.Info is { } info && p.PixelWidth <= 0)
+            {
+                p.PixelWidth = info.PixelWidth;
+                p.PixelHeight = info.PixelHeight;
+                p.Orientation = info.Orientation;
+                p.DateTaken = info.DateTaken;
+                p.CameraModel = info.CameraModel;
+            }
+            if (result.Size > 0)
+            {
+                p.SizeBytes = result.Size;
+                p.ModifiedUtc = result.ModifiedUtc;
+            }
+            UpdateInfo(p);
         }
         if (crossfade && _hasImage) StartCrossfade();
         Display(p, result.Bitmap, result.Error, result.Missing, isPlaceholder: false);
@@ -587,6 +842,9 @@ public partial class ViewerWindow
         _playing = true;
         RestartTimer();
         UpdatePlayButtons();
+        // Slideshows start full screen; resuming one the user has taken out of full screen doesn't force it back.
+        if (!_slideshowStartedOnce) EnterFullScreen();
+        _slideshowStartedOnce = true;
         Preload();
     }
 
@@ -636,7 +894,16 @@ public partial class ViewerWindow
     void UpdateChrome(Photo p)
     {
         FileNameText.Text = p.FileName;
+        Title = $"{p.FileName} – PhotoScope";
         PositionText.Text = _slideshow ? $"{_orderPos + 1} of {_order.Count}" : $"{_index + 1} of {_items.Count}";
+        var inLibrary = InLibrary(p);
+        // Until the library has loaded we can't tell whether a file is in it.
+        AddToLibraryButton.Visibility = inLibrary || !_vm.LibraryLoaded.IsCompleted ? Visibility.Collapsed : Visibility.Visible;
+        FavButton.IsEnabled = inLibrary;
+        Stars.IsEnabled = inLibrary;
+        Stars.Opacity = inLibrary ? 1 : 0.4;
+        FavButton.ToolTip = inLibrary ? "Favourite (F)" : "Add the photo to your library to favourite it";
+        Stars.ToolTip = inLibrary ? "Rating (0–5)" : "Add the photo to your library to rate it";
         FavButton.IsChecked = p.IsFavourite;
         FavButton.Content = p.IsFavourite ? "\uEB52" : "\uEB51";
         for (var i = 0; i < Stars.Children.Count; i++)
@@ -669,21 +936,34 @@ public partial class ViewerWindow
             InfoGrid.Children.Add(l);
             InfoGrid.Children.Add(v);
         }
-        Row("Dimensions", p.DimensionsText);
-        Row("File size", p.SizeText);
-        Row("Date taken", p.DateTakenText);
+        Row("Dimensions", p.PixelWidth > 0 ? p.DimensionsText : null);
+        Row("File size", p.SizeBytes > 0 ? p.SizeText : null);
+        Row("Date taken", p.ModifiedUtc != default || p.DateTaken != null ? p.DateTakenText : null);
         Row("Camera", p.CameraModel);
-        Row("Rating", p.Rating > 0 ? new string('\u2605', p.Rating) + new string('\u2606', 5 - p.Rating) : "Not rated");
-        Row("Tags", p.Tags);
+        if (InLibrary(p))
+        {
+            Row("Rating", p.Rating > 0 ? new string('★', p.Rating) + new string('☆', 5 - p.Rating) : "Not rated");
+            Row("Tags", p.Tags);
+        }
+        else
+        {
+            Row("Library", "Not in your library");
+        }
         Row("Path", p.Path);
     }
 
     bool _chromeVisible = true;
 
+    void ShowCursor()
+    {
+        ForceCursor = false;
+        ClearValue(CursorProperty);
+    }
+
     void ShowChrome()
     {
         if (_slideshow) SlideBar.Visibility = Visibility.Visible;
-        Mouse.OverrideCursor = null;
+        ShowCursor();
         if (!_chromeVisible)
         {
             _chromeVisible = true;
@@ -708,7 +988,13 @@ public partial class ViewerWindow
         if (TopBar.IsMouseOver || SlideBar.IsMouseOver || IntervalBox.IsDropDownOpen) { _idleTimer.Start(); return; }
         _chromeVisible = false;
         foreach (var el in ChromeElements) Fade(el, 0);
-        if (IsActive) Mouse.OverrideCursor = Cursors.None;
+        // Only hide the pointer in full screen; in a window it would vanish over the desktop's edge.
+        if (IsActive && _fullScreen && IsMouseOver)
+        {
+            // Hides the pointer over this window only (not over other PhotoScope windows).
+            Cursor = Cursors.None;
+            ForceCursor = true;
+        }
     }
 
     void ShowToast(string text)
@@ -723,41 +1009,81 @@ public partial class ViewerWindow
 
     // ------------------------------------------------------------------ actions
 
+    bool RequireLibrary(string what)
+    {
+        if (_shown == null) return false;
+        if (InLibrary(_shown)) return true;
+        if (!_vm.LibraryLoaded.IsCompleted)
+        {
+            ShowToast("Your library is still loading\u2026");
+            return false;
+        }
+        ShowToast($"Add this photo to your library to {what} it");
+        return false;
+    }
+
     void ToggleFavourite()
     {
-        if (_shown == null) return;
-        _vm.ToggleFavourite([_shown]);
-        UpdateChrome(_shown);
-        ShowToast(_shown.IsFavourite ? "Added to favourites" : "Removed from favourites");
+        if (!RequireLibrary("favourite")) return;
+        _vm.ToggleFavourite([_shown!]);
+        UpdateChrome(_shown!);
+        ShowToast(_shown!.IsFavourite ? "Added to favourites" : "Removed from favourites");
     }
 
     void SetRating(int rating)
     {
-        if (_shown == null) return;
-        _vm.SetRating([_shown], rating);
-        UpdateChrome(_shown);
-        ShowToast(rating == 0 ? "Rating cleared" : $"Rated {new string('\u2605', rating)}");
+        if (!RequireLibrary("rate")) return;
+        _vm.SetRating([_shown!], rating);
+        UpdateChrome(_shown!);
+        ShowToast(rating == 0 ? "Rating cleared" : $"Rated {new string('★', rating)}");
     }
 
     void RotateShown(int delta)
     {
         if (_shown == null) return;
-        _vm.Rotate([_shown], delta);
+        if (InLibrary(_shown)) _vm.Rotate([_shown], delta);
+        else _shown.Rotation = ((_shown.Rotation + delta) % 360 + 360) % 360; // just for this viewing
         SetContentSize(_shown, MainImage.Source as BitmapSource);
         FitToScreen();
         UpdateInfo(_shown);
     }
 
+    async void AddShownToLibrary()
+    {
+        if (_shown is not { } p || InLibrary(p)) return;
+        AddToLibraryButton.IsEnabled = false;
+        try
+        {
+            var lib = await _vm.AddFileToLibraryAsync(p.Path);
+            if (!IsLoaded || lib == null) return;
+            if (p.Rotation != 0 && lib.Rotation == 0) _vm.Rotate([lib], p.Rotation);
+            var i = _items.IndexOf(p);
+            if (i >= 0) _items[i] = lib;
+            if (ReferenceEquals(_shown, p)) _shown = lib;
+            UpdateChrome(_items[_index]);
+            ShowToast("Added to library");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Add to library from viewer failed", ex);
+        }
+        finally
+        {
+            AddToLibraryButton.IsEnabled = true;
+        }
+    }
+
     async void DeleteShown()
     {
-        if (_shown == null) return;
+        if (_shown is not { } shown) return;
         var wasPlaying = _playing;
         if (wasPlaying) Pause();
-        Mouse.OverrideCursor = null;
+        ShowCursor();
         IReadOnlyCollection<Photo> removed;
         try
         {
-            removed = await _vm.DeleteInteractiveAsync([_shown]);
+            if (InLibrary(shown)) removed = await _vm.DeleteInteractiveAsync([shown]);
+            else removed = await _vm.RecycleLooseFileAsync(shown.Path) ? [shown] : [];
         }
         catch (Exception ex)
         {
@@ -774,8 +1100,12 @@ public partial class ViewerWindow
         var index = _index;
         foreach (var p in removed)
         {
-            _cache.Remove(p.Id);
-            _items.Remove(p);
+            _cache.Remove(CacheKey(p));
+            // Match by path: the list may hold a different object for the same file by now.
+            var at = _items.FindIndex(x => PathComparer.Equals(x.Path, p.Path));
+            if (at < 0) continue;
+            if (_fileMode && File.Exists(p.Path)) _items[at] = LoosePhoto(p.Path); // removed from library only: still in the folder
+            else _items.RemoveAt(at);
         }
         _shown = null;
         _hasImage = false;
@@ -801,7 +1131,12 @@ public partial class ViewerWindow
         var handled = true;
         switch (key)
         {
-            case Key.Escape: Close(); break;
+            case Key.Escape:
+                // Esc leaves full screen first; it closes the viewer only when already windowed.
+                if (_fullScreen) ExitFullScreen();
+                else Close();
+                break;
+            case Key.F11: ToggleFullScreen(); break;
             case Key.Left or Key.PageUp or Key.Up: Advance(-1, false); break;
             case Key.Right or Key.PageDown or Key.Down: Advance(+1, false); break;
             case Key.Home: GoTo(_slideshow ? _order[0] : 0); break;
@@ -842,6 +1177,8 @@ public partial class ViewerWindow
     void OnActualSize(object sender, RoutedEventArgs e) => ActualSize();
     void OnInfo(object sender, RoutedEventArgs e) => ToggleInfo();
     void OnPlayPause(object sender, RoutedEventArgs e) => TogglePlay();
+    void OnFullScreen(object sender, RoutedEventArgs e) => ToggleFullScreen();
+    void OnAddToLibrary(object sender, RoutedEventArgs e) => AddShownToLibrary();
     void OnClose(object sender, RoutedEventArgs e) => Close();
 
     void OnIntervalChanged(object sender, SelectionChangedEventArgs e)
