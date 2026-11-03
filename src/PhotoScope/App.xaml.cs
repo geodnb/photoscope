@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Threading;
+using PhotoScope.Models;
 using PhotoScope.Services;
 using PhotoScope.ViewModels;
 using PhotoScope.Views;
@@ -242,6 +243,21 @@ public partial class App : Application
             Dialogs.Error("Can't open this file", Friendly.DescribeImageError(ex, path));
             return false;
         }
+    }
+
+    /// <summary>
+    /// From the viewer: brings up the library window and, when the photo is in the library,
+    /// selects it there (waiting for the library to finish loading if needed).
+    /// </summary>
+    public async void ShowLibrary(Photo? reveal)
+    {
+        ShowMainWindow();
+        if (_vm == null || reveal == null) return;
+        try { await _vm.LibraryLoaded; } catch { return; }
+        var photo = reveal.Id > 0 ? _vm.FindPhoto(reveal.Id) : _vm.FindByPath(reveal.Path);
+        if (photo == null || _mainWindow == null) return;
+        // Let a newly created window finish its first layout before scrolling to the photo.
+        await Dispatcher.InvokeAsync(() => _vm.Reveal(photo), DispatcherPriority.Loaded);
     }
 
     /// <summary>Shows the library window, creating it the first time (it isn't created when opening a file).</summary>

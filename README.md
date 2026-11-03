@@ -67,6 +67,8 @@ photos are preloaded.
 - `PhotoScope.exe "C:\path\photo.jpg"` (which is what Windows runs when PhotoScope is the default or chosen with
   *Open with*) opens the photo straight in the viewer. The image appears first; the library loads behind it.
 - The arrow keys move through the other images in the same folder, sorted by name like Explorer.
+- The library button in the viewer's toolbar (or Ctrl+L) opens the main PhotoScope window, with the photo selected
+  if it's in the library.
 - Photos already in the library show their rating, favourite and tags. Others aren't imported: click
   **Add to library** to add one (in place, nothing is copied). Rating and favourites need the photo in the library;
   rotation works for the session.
@@ -139,6 +141,7 @@ shuffle and loop, thumbnail cache size with Clear cache.
 | R / Shift+R | Rotate right / left (viewing rotation only) |
 | Space | Start, pause or resume the slideshow (slideshows go full screen) |
 | F11 | Toggle full screen |
+| Ctrl+L | Open the library window (selects the photo if it's in the library); also a toolbar button when the photo was opened from Explorer |
 | Delete | Delete (same choices as the gallery; files not in the library can only go to the Recycle Bin) |
 | Esc | Leave full screen; closes the viewer when it's already windowed |
 

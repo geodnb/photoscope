@@ -97,6 +97,8 @@
                             FontFamily="{StaticResource Font.UI}" FontSize="13" FontWeight="SemiBold" Content="1:1"/>
                     <ToggleButton x:Name="InfoButton" Style="{StaticResource ViewerToggle}" Content="&#xE946;" Click="OnInfo" AutomationProperties.Name="Info" ToolTip="Info (I)" Focusable="False"/>
                     <Button x:Name="PlayButton" AutomationProperties.Name="Play" Style="{StaticResource ViewerButton}" Content="&#xE768;" Click="OnPlayPause" ToolTip="Slideshow (Space)" Focusable="False"/>
+                    <Button x:Name="LibraryButton" AutomationProperties.Name="Open PhotoScope library" Style="{StaticResource ViewerButton}" Content="&#xE8B9;"
+                            Click="OnOpenLibrary" ToolTip="Open the PhotoScope library (Ctrl+L)" Focusable="False" Visibility="Collapsed"/>
                     <Button x:Name="FullScreenButton" AutomationProperties.Name="Full screen" Style="{StaticResource ViewerButton}" Content="&#xE740;" Click="OnFullScreen" ToolTip="Full screen (F11)" Focusable="False"/>
                     <Border Width="1" Margin="6,6" Background="#33FFFFFF"/>
                     <Button Style="{StaticResource ViewerButton}" Content="&#xE711;" Click="OnClose" AutomationProperties.Name="Close viewer" ToolTip="Close (Esc)" Focusable="False"/>

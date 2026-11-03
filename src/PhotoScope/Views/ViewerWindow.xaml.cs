@@ -99,6 +99,8 @@ public partial class ViewerWindow
         _fileMode = fileMode;
         _items = items;
         _index = Math.Clamp(startIndex, 0, Math.Max(0, _items.Count - 1));
+        // Opened from Explorer there's no library window behind the viewer, so offer a way to it.
+        LibraryButton.Visibility = fileMode ? Visibility.Visible : Visibility.Collapsed;
         RestorePlacement();
         if (App.Offscreen) { App.SendToBack(this); App.AddSnapshotHook(this, Root); }
 
@@ -1137,6 +1139,7 @@ public partial class ViewerWindow
                 else Close();
                 break;
             case Key.F11: ToggleFullScreen(); break;
+            case Key.L when ctrl: OpenLibrary(); break;
             case Key.Left or Key.PageUp or Key.Up: Advance(-1, false); break;
             case Key.Right or Key.PageDown or Key.Down: Advance(+1, false); break;
             case Key.Home: GoTo(_slideshow ? _order[0] : 0); break;
@@ -1178,6 +1181,15 @@ public partial class ViewerWindow
     void OnInfo(object sender, RoutedEventArgs e) => ToggleInfo();
     void OnPlayPause(object sender, RoutedEventArgs e) => TogglePlay();
     void OnFullScreen(object sender, RoutedEventArgs e) => ToggleFullScreen();
+    void OnOpenLibrary(object sender, RoutedEventArgs e) => OpenLibrary();
+
+    /// <summary>Shows the library window (selecting this photo if it's in the library).</summary>
+    void OpenLibrary()
+    {
+        if (_fullScreen) ExitFullScreen(); // otherwise the library would open hidden behind a full-screen viewer
+        ShowCursor();
+        (Application.Current as App)?.ShowLibrary(_shown);
+    }
     void OnAddToLibrary(object sender, RoutedEventArgs e) => AddShownToLibrary();
     void OnClose(object sender, RoutedEventArgs e) => Close();
 
