@@ -162,3 +162,8 @@ shuffle and loop, thumbnail cache size with Clear cache.
 - The thumbnail cache defaults to 4 GB (about 100,000 photos); change it in Settings.
 - Developer aids exist only in Debug builds: `PHOTOSCOPE_HOME=<folder>` (use a different data folder),
   `--debug-import <folder>` and `PHOTOSCOPE_OFFSCREEN=1` (automated UI checks). Release builds ignore them.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). Third-party packages keep their own licences: CommunityToolkit.Mvvm (MIT),
+Microsoft.Data.Sqlite (MIT) and VirtualizingWrapPanel (MIT).
