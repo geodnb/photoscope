@@ -22,8 +22,8 @@ dotnet publish src/PhotoScope -c Release -r win-x64 --self-contained false -o pu
 
 Run the tests with `dotnet test`.
 
-The app icon (`src/PhotoScope/Assets/PhotoScope.ico`, 16-256 px) is drawn by `tools/make-icon.ps1`; run
-`powershell -STA -File tools\make-icon.ps1` to regenerate it.
+The app icon is `src/PhotoScope/Assets/PhotoScope.ico` (16-256 px), used for the exe, window title bars and the
+taskbar, with `PhotoScope.png` (256 px) as the sidebar logo. To change it, replace both files and rebuild.
 
 ## Where things are stored
 
